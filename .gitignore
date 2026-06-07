@@ -5,13 +5,13 @@ __v0_jsx-dev-runtime.ts
 
 # Common ignores
 node_modules/
+.pnpm-store/
 .next/
-.env*.local
 .env
+.env.*
+!.env.example
 dev-server.log
 *.log
 tsconfig.tsbuildinfo
 .DS_Store
-.vercel
-
 .vercel

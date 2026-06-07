@@ -5,12 +5,56 @@ import type {
   MarketSignal,
   RiskItem,
   Severity,
+  ThreatCampaign,
   TokenRiskReport,
 } from "./types"
 
+function envOrDefault(name: string, fallback: string) {
+  const value = process.env[name]?.trim()
+  return value || fallback
+}
+
 const GOPLUS_BASE = "https://api.gopluslabs.io/api"
-const SOSO_BASE =
-  process.env.SOSOVALUE_BASE_URL ?? "https://openapi.sosovalue.com/openapi/v1"
+const SOSO_BASE = envOrDefault("SOSOVALUE_BASE_URL", "https://openapi.sosovalue.com/openapi/v1")
+const SODEX_REST_BASE = envOrDefault("SODEX_REST_BASE_URL", "https://mainnet-gw.sodex.dev/api/v1").replace(/\/$/, "")
+const SODEX_SPOT_ENDPOINT = envOrDefault("SODEX_SPOT_ENDPOINT", `${SODEX_REST_BASE}/spot`)
+const SODEX_PERPS_ENDPOINT = envOrDefault("SODEX_PERPS_ENDPOINT", `${SODEX_REST_BASE}/perps`)
+const DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+
+const FALLBACK_SOSO_INDEX_TICKERS = ["ssimag7", "ssimeme", "ssidefi", "ussi"]
+const SOSO_INDEX_METADATA: Record<string, { label: string; context: string }> = {
+  ssimag7: { label: "MAG7.ssi", context: "large-cap crypto beta" },
+  ssimeme: { label: "MEME.ssi", context: "meme-sector risk pulse" },
+  ssidefi: { label: "DEFI.ssi", context: "DeFi-sector risk pulse" },
+  ussi: { label: "USSI", context: "delta-neutral index stability" },
+}
+
+const CAMPAIGN_QUERIES = [
+  {
+    slug: "wallet-drainer",
+    keyword: "wallet drainer",
+    title: "Wallet-drainer narrative",
+    severity: "high" as Severity,
+  },
+  {
+    slug: "phishing",
+    keyword: "phishing",
+    title: "Phishing link campaign",
+    severity: "high" as Severity,
+  },
+  {
+    slug: "fake-airdrop",
+    keyword: "fake airdrop",
+    title: "Fake airdrop campaign",
+    severity: "medium" as Severity,
+  },
+  {
+    slug: "honeypot",
+    keyword: "honeypot",
+    title: "Honeypot token campaign",
+    severity: "medium" as Severity,
+  },
+]
 
 export function isAddress(value: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value)
@@ -47,6 +91,7 @@ export async function rpcCall<T>(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     cache: "no-store",
+    signal: AbortSignal.timeout(12_000),
   })
 
   if (!response.ok) {
@@ -75,11 +120,16 @@ async function getJson(url: string, headers?: HeadersInit) {
   const response = await fetch(url, {
     headers,
     cache: "no-store",
+    signal: AbortSignal.timeout(12_000),
   })
   if (!response.ok) {
     throw new Error(`${url} failed with ${response.status}`)
   }
   return response.json()
+}
+
+export function getOpenAiModel() {
+  return process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL
 }
 
 function boolish(value: unknown) {
@@ -92,6 +142,7 @@ function buildApprovalRiskLabels(token: Record<string, any>, approval: Record<st
   const amount = String(approval.approved_amount ?? "")
 
   if (/unlimited/i.test(amount)) labels.push("Unlimited allowance")
+  if (boolish(approval.approved_for_all)) labels.push("NFT operator approval")
   if (boolish(token.malicious_address)) labels.push("Token marked malicious")
   if (boolish(info.doubt_list)) labels.push("Spender on doubt list")
   if (boolish(info.malicious_address)) labels.push("Spender marked malicious")
@@ -113,7 +164,7 @@ function buildApprovalRiskLabels(token: Record<string, any>, approval: Record<st
 
 function approvalSeverity(labels: string[]): Severity {
   if (labels.some((label) => /malicious|doubt/i.test(label))) return "critical"
-  if (labels.some((label) => /unlimited/i.test(label))) return "high"
+  if (labels.some((label) => /unlimited|operator/i.test(label))) return "high"
   if (labels.some((label) => /not verified/i.test(label))) return "medium"
   return "low"
 }
@@ -141,6 +192,18 @@ function flattenApprovalResult(
         const severity = approvalSeverity(riskLabels)
         const info = approval.address_info ?? {}
         const spender = String(approval.approved_contract)
+        const approvedForAll =
+          type === "erc20" ? undefined : boolish(approval.approved_for_all)
+        const approvedTokenId =
+          approval.approved_token_id != null ? String(approval.approved_token_id) : undefined
+        const approvedAmount =
+          type === "erc20"
+            ? String(approval.approved_amount ?? "Unknown")
+            : approvedForAll
+              ? "Approved for all"
+              : approvedTokenId
+                ? `Token #${approvedTokenId}`
+                : "Single NFT approval"
 
         return {
           id: `${type}-${chainId}-${tokenAddress}-${spender}-${index}`,
@@ -152,7 +215,9 @@ function flattenApprovalResult(
           spenderAddress: spender,
           spenderName: info.contract_name || info.tag || shortAddress(spender),
           spenderTag: info.tag ?? undefined,
-          approvedAmount: String(approval.approved_amount ?? approval.approved_for_all ?? "Unknown"),
+          approvedAmount,
+          approvedForAll,
+          approvedTokenId,
           approvedAt: Number(approval.approved_time ?? approval.initial_approval_time) || undefined,
           txHash: approval.hash ?? approval.initial_approval_hash ?? undefined,
           risky: severityRank(severity) >= severityRank("medium"),
@@ -238,6 +303,45 @@ function stripHtml(value?: string) {
     .trim()
 }
 
+function asList(value: any) {
+  if (Array.isArray(value)) return value
+  if (Array.isArray(value?.list)) return value.list
+  return []
+}
+
+function numberOrZero(value: unknown) {
+  const next = Number(value)
+  return Number.isFinite(next) ? next : 0
+}
+
+function formatUsd(value: unknown, maximumFractionDigits = 2) {
+  const next = Number(value)
+  if (!Number.isFinite(next) || next <= 0) return "Live"
+  return `$${next.toLocaleString(undefined, { maximumFractionDigits })}`
+}
+
+function formatPercent(value: unknown, decimalRatio = false) {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return undefined
+  const normalized = decimalRatio ? next * 100 : next
+  return `${normalized.toFixed(2)}% 24h`
+}
+
+function signalSeverity(changePct: number): Severity {
+  const magnitude = Math.abs(changePct)
+  if (magnitude >= 12) return "high"
+  if (magnitude >= 5) return "medium"
+  return "info"
+}
+
+function newsTitle(item: Record<string, any>) {
+  return stripHtml(item.title).slice(0, 140) || "Crypto threat update"
+}
+
+function newsUrl(item: Record<string, any>) {
+  return item.original_link || item.source_link
+}
+
 async function sosoFetch(path: string) {
   const key = process.env.SOSOVALUE_API_KEY
   if (!key) throw new Error("SOSOVALUE_API_KEY is not configured")
@@ -245,20 +349,78 @@ async function sosoFetch(path: string) {
     "x-soso-api-key": key,
   })
 
-  if (payload.code !== 0 && payload.code !== "0") {
+  if ("code" in payload && payload.code !== 0 && payload.code !== "0") {
     throw new Error(payload.message ?? "SoSoValue API request failed")
   }
 
-  return payload.data
+  return "data" in payload ? payload.data : payload
 }
 
 type MarketSignalResult = {
   signals: MarketSignal[]
+  campaigns: ThreatCampaign[]
   status: "live" | "fallback" | "unconfigured" | "error"
   detail: string
 }
 
 let marketSignalCache: { expiresAt: number; result: MarketSignalResult } | null = null
+
+async function fetchSosoCampaigns() {
+  const settled = await Promise.allSettled(
+    CAMPAIGN_QUERIES.map(async (query) => {
+      const result = await sosoFetch(
+        `/news/search?keyword=${encodeURIComponent(query.keyword)}&page=1&page_size=3`,
+      )
+      const list = asList(result)
+      if (list.length === 0) return null
+
+      const first = list[0] as Record<string, any>
+      const total = numberOrZero(result?.total) || list.length
+      return {
+        id: `campaign-${query.slug}`,
+        title: query.title,
+        keyword: query.keyword,
+        mentionCount: total,
+        severity: query.severity,
+        source: "SoSoValue News Search",
+        detail: `${total} recent SoSoValue result${total === 1 ? "" : "s"} matched "${query.keyword}". Latest: ${newsTitle(first)}`,
+        url: newsUrl(first),
+      } satisfies ThreatCampaign
+    }),
+  )
+
+  const campaigns: ThreatCampaign[] = []
+  for (const item of settled) {
+    if (item.status === "fulfilled" && item.value) {
+      campaigns.push(item.value)
+    }
+  }
+  return campaigns
+}
+
+async function fetchSosoIndexTargets() {
+  try {
+    const available = asList(await sosoFetch("/indices"))
+      .map((ticker: unknown) => String(ticker).toLowerCase())
+      .filter(Boolean)
+    const preferred = FALLBACK_SOSO_INDEX_TICKERS.filter((ticker) => available.includes(ticker))
+    const remaining = available.filter((ticker: string) => !preferred.includes(ticker))
+    const selected = [...preferred, ...remaining].slice(0, 4)
+    if (selected.length > 0) return selected.map(indexTarget)
+  } catch {
+    // Fall back to the known WaveHack demo set if the list endpoint is unavailable.
+  }
+  return FALLBACK_SOSO_INDEX_TICKERS.map(indexTarget)
+}
+
+function indexTarget(ticker: string) {
+  const meta = SOSO_INDEX_METADATA[ticker]
+  return {
+    ticker,
+    label: meta?.label ?? `${ticker.toUpperCase()}.ssi`,
+    context: meta?.context ?? "SoSoValue index risk pulse",
+  }
+}
 
 export async function fetchMarketSignals() {
   if (!process.env.SOSOVALUE_API_KEY) {
@@ -273,6 +435,7 @@ export async function fetchMarketSignals() {
           detail: "Add SOSOVALUE_API_KEY to unlock live market, news, and sentiment context.",
         },
       ],
+      campaigns: [],
       status: "unconfigured" as const,
       detail: "SOSOVALUE_API_KEY not present in the server environment.",
     }
@@ -299,17 +462,26 @@ export async function fetchMarketSignals() {
       .filter(Boolean)
       .slice(0, 2) as Array<{ currency_id: string; symbol: string; name: string }>
 
-    const [snapshots, newsResult] = await Promise.all([
+    const indexTargets = await fetchSosoIndexTargets()
+
+    const [snapshots, newsResult, indexResults, campaignResults] = await Promise.all([
       Promise.allSettled(
-      matched.map(async (currency) => {
-        const snapshot = await sosoFetch(`/currencies/${currency.currency_id}/market-snapshot`)
-        return { currency, snapshot: snapshot as Record<string, any> }
-      }),
+        matched.map(async (currency) => {
+          const snapshot = await sosoFetch(`/currencies/${currency.currency_id}/market-snapshot`)
+          return { currency, snapshot: snapshot as Record<string, any> }
+        }),
       ),
-      sosoFetch("/news?language=en&page=1&page_size=4").then(
+      sosoFetch("/news?language=en&page=1&page_size=3").then(
         (news) => ({ status: "fulfilled" as const, news }),
         (error) => ({ status: "rejected" as const, error }),
       ),
+      Promise.allSettled(
+        indexTargets.map(async (index) => {
+          const snapshot = await sosoFetch(`/indices/${index.ticker}/market-snapshot`)
+          return { index, snapshot: snapshot as Record<string, any> }
+        }),
+      ),
+      fetchSosoCampaigns(),
     ])
 
     for (const item of snapshots) {
@@ -321,30 +493,48 @@ export async function fetchMarketSignals() {
         id: `market-${currency.symbol}`,
         title: `${currency.symbol} market context`,
         value: price ? `$${price.toLocaleString(undefined, { maximumFractionDigits: 4 })}` : "Live",
-        change: Number.isFinite(change) ? `${change.toFixed(2)}% 24h` : undefined,
-        severity: change <= -8 ? "medium" : "info",
+        change: formatPercent(change),
+        severity: signalSeverity(change),
         source: "SoSoValue Market Snapshot",
         detail:
-          change <= -8
+          Math.abs(change) >= 5
             ? "Sharp market moves can increase scam-airdrop and panic-signing attempts."
             : "Market snapshot is available for wallet-context risk scoring.",
       })
     }
 
     if (newsResult.status === "fulfilled") {
-      const newsList = Array.isArray(newsResult.news?.list) ? newsResult.news.list : []
+      const newsList = asList(newsResult.news)
       signals.push(
-        ...newsList.slice(0, 4).map((item: Record<string, any>) => ({
+        ...newsList.slice(0, 3).map((item: Record<string, any>) => ({
           id: `news-${item.id}`,
-          title: String(item.title ?? "Crypto market update"),
+          title: newsTitle(item),
           value: "News",
           severity: "info" as Severity,
           source: "SoSoValue News Feed",
           detail: stripHtml(item.content).slice(0, 180) || "Live crypto feed item.",
-          url: item.original_link || item.source_link,
+          url: newsUrl(item),
         })),
       )
     }
+
+    for (const item of indexResults) {
+      if (item.status !== "fulfilled") continue
+      const { index, snapshot } = item.value
+      const change = numberOrZero(snapshot["24h_change_pct"])
+      const normalizedChange = Math.abs(change) <= 1 ? change * 100 : change
+      signals.push({
+        id: `soso-index-${index.ticker}`,
+        title: `${index.label} index context`,
+        value: formatUsd(snapshot.price, 4),
+        change: formatPercent(change, Math.abs(change) <= 1),
+        severity: signalSeverity(normalizedChange),
+        source: "SoSoValue Index Snapshot",
+        detail: `${index.label} tracks ${index.context}. This helps compare wallet-token exposure against sector-wide stress instead of isolated token noise.`,
+      })
+    }
+
+    const campaigns = campaignResults
 
     if (signals.length === 0) {
       throw new Error("SoSoValue returned no usable market or news signals.")
@@ -352,12 +542,15 @@ export async function fetchMarketSignals() {
 
     const result = {
       signals,
+      campaigns,
       status: "live" as const,
-      detail: "BTC/ETH snapshots and live news loaded from SoSoValue.",
+      detail: "BTC/ETH snapshots, SSI index snapshots, news, and scam-campaign searches loaded from SoSoValue.",
     }
     marketSignalCache = { expiresAt: Date.now() + 60_000, result }
     return result
-  } catch (error) {
+  } catch {
+    const fallbackDetail =
+      "The SoSoValue API request failed, so WalletShield continued with wallet and security feeds."
     return {
       signals: [
         {
@@ -366,17 +559,181 @@ export async function fetchMarketSignals() {
           value: "Retry later",
           severity: "info" as Severity,
           source: "SoSoValue",
-          detail:
-            error instanceof Error
-              ? error.message
-              : "The SoSoValue API request failed, so WalletShield continued with wallet and security feeds.",
+          detail: fallbackDetail,
+        },
+      ],
+      campaigns: [],
+      status: "error" as const,
+      detail: fallbackDetail,
+    }
+  }
+}
+
+type SodexSignalResult = {
+  signals: MarketSignal[]
+  status: "live" | "fallback" | "unconfigured" | "error"
+  detail: string
+}
+
+let sodexSignalCache: { key: string; expiresAt: number; result: SodexSignalResult } | null = null
+
+async function sodexFetch(endpoint: string) {
+  const payload = await getJson(endpoint, { accept: "application/json" })
+  if ("code" in payload && payload.code !== 0 && payload.code !== "0") {
+    throw new Error(payload.error ?? "SoDEX request failed")
+  }
+  return "data" in payload ? payload.data : payload
+}
+
+function topByQuoteVolume(list: Array<Record<string, any>>, limit: number) {
+  return [...list]
+    .sort((a, b) => numberOrZero(b.quoteVolume) - numberOrZero(a.quoteVolume))
+    .slice(0, limit)
+}
+
+export async function fetchSodexSignals(address?: string): Promise<SodexSignalResult> {
+  const cacheKey = address?.toLowerCase() || "public"
+  if (
+    sodexSignalCache &&
+    sodexSignalCache.key === cacheKey &&
+    sodexSignalCache.expiresAt > Date.now()
+  ) {
+    return {
+      ...sodexSignalCache.result,
+      detail: `${sodexSignalCache.result.detail} Served from short-lived cache.`,
+    }
+  }
+
+  try {
+    const [spotResult, perpsResult, spotKeysResult, perpsKeysResult] = await Promise.allSettled([
+      sodexFetch(`${SODEX_SPOT_ENDPOINT}/markets/tickers`),
+      sodexFetch(`${SODEX_PERPS_ENDPOINT}/markets/tickers`),
+      address
+        ? sodexFetch(`${SODEX_SPOT_ENDPOINT}/accounts/${address}/api-keys`)
+        : Promise.resolve([]),
+      address
+        ? sodexFetch(`${SODEX_PERPS_ENDPOINT}/accounts/${address}/api-keys`)
+        : Promise.resolve([]),
+    ])
+
+    const spotTickers =
+      spotResult.status === "fulfilled"
+        ? (asList(spotResult.value) as Array<Record<string, any>>)
+        : []
+    const perpsTickers =
+      perpsResult.status === "fulfilled"
+        ? (asList(perpsResult.value) as Array<Record<string, any>>)
+        : []
+
+    const signals: MarketSignal[] = []
+
+    if (spotTickers.length > 0) {
+      const ssiMarkets = spotTickers.filter((ticker) =>
+        /ssi|soso/i.test(String(ticker.symbol ?? "")),
+      )
+      const featured = topByQuoteVolume(ssiMarkets.length > 0 ? ssiMarkets : spotTickers, 3)
+      const quoteVolume = featured.reduce((sum, ticker) => sum + numberOrZero(ticker.quoteVolume), 0)
+      signals.push({
+        id: "sodex-spot-ssi",
+        title: "SoDEX spot execution context",
+        value: `${featured.length} focus markets`,
+        change: quoteVolume > 0 ? `${formatUsd(quoteVolume, 0)} 24h volume` : undefined,
+        severity: "info",
+        source: "SoDEX Public Spot API",
+        detail: `Live public spot tickers are available for ${featured
+          .map((ticker) => ticker.symbol)
+          .join(", ")}. WalletShield uses this as read-only liquidity context before users trade or rebalance.`,
+      })
+    }
+
+    if (perpsTickers.length > 0) {
+      const majors = perpsTickers.filter((ticker) =>
+        ["BTC-USD", "ETH-USD", "SOL-USD"].includes(String(ticker.symbol)),
+      )
+      const volatile = topByQuoteVolume(majors.length > 0 ? majors : perpsTickers, 3)
+      const stressed = volatile.filter((ticker) => Math.abs(numberOrZero(ticker.changePct)) >= 5)
+      signals.push({
+        id: "sodex-perps-risk",
+        title: "SoDEX perps risk pulse",
+        value: `${perpsTickers.length} perps markets`,
+        change:
+          stressed.length > 0
+            ? `${stressed.length} sharp mover${stressed.length === 1 ? "" : "s"}`
+            : "No major stress",
+        severity: stressed.length > 0 ? "medium" : "info",
+        source: "SoDEX Public Perps API",
+        detail:
+          stressed.length > 0
+            ? `Sharp moves in ${stressed.map((ticker) => ticker.symbol).join(", ")} can create urgency scams, fake liquidation messages, and panic-signing attempts.`
+            : "Perps market data is reachable and does not show a major stress signal in the focus set.",
+      })
+    }
+
+    if (address) {
+      const spotKeys =
+        spotKeysResult.status === "fulfilled"
+          ? (asList(spotKeysResult.value) as Array<Record<string, any>>)
+          : []
+      const perpsKeys =
+        perpsKeysResult.status === "fulfilled"
+          ? (asList(perpsKeysResult.value) as Array<Record<string, any>>)
+          : []
+      const keyCount = spotKeys.length + perpsKeys.length
+      const failedAccountReads =
+        (spotKeysResult.status === "rejected" ? 1 : 0) +
+        (perpsKeysResult.status === "rejected" ? 1 : 0)
+
+      signals.push({
+        id: "sodex-api-key-surface",
+        title: "SoDEX signing-key surface",
+        value:
+          failedAccountReads === 2
+            ? "Account read failed"
+            : `${keyCount} registered key${keyCount === 1 ? "" : "s"}`,
+        severity: keyCount > 0 ? "medium" : "low",
+        source: "SoDEX Account API",
+        detail:
+          keyCount > 0
+            ? "This wallet has registered SoDEX API keys. Rotate unused keys and keep the master wallet offline except for add/revoke key operations."
+            : failedAccountReads > 0
+              ? "SoDEX public market data loaded, but one account key read failed for this address."
+              : "No registered SoDEX signing keys were returned for this wallet.",
+        url: "https://sodex.com/documentation/trading-api/trading-api",
+      })
+    }
+
+    if (signals.length === 0) {
+      throw new Error("SoDEX returned no usable public ticker data.")
+    }
+
+    const result = {
+      signals,
+      status:
+        spotResult.status === "fulfilled" || perpsResult.status === "fulfilled"
+          ? ("live" as const)
+          : ("error" as const),
+      detail: address
+        ? "Read-only SoDEX spot/perps market data and account signing-key surface loaded."
+        : "Read-only SoDEX spot/perps public market data loaded.",
+    }
+    sodexSignalCache = { key: cacheKey, expiresAt: Date.now() + 60_000, result }
+    return result
+  } catch {
+    const fallbackDetail =
+      "SoDEX public market data failed, so WalletShield continued without execution-context signals."
+    return {
+      signals: [
+        {
+          id: "sodex-error",
+          title: "SoDEX public market data unavailable",
+          value: "Retry later",
+          severity: "info" as Severity,
+          source: "SoDEX Public API",
+          detail: fallbackDetail,
         },
       ],
       status: "error" as const,
-      detail:
-        error instanceof Error
-          ? error.message
-          : "SoSoValue API request failed.",
+      detail: fallbackDetail,
     }
   }
 }
@@ -390,34 +747,39 @@ export async function generateAiSummary(input: {
   const key = process.env.OPENAI_API_KEY
   if (!key) return null
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL ?? "gpt-5.5",
-      reasoning: { effort: "low" },
-      instructions:
-        "You are WalletShield AI, a crypto wallet security assistant. Explain risk clearly, avoid fearmongering, and never ask for seed phrases or private keys. Keep output under 120 words. Use plain text with no Markdown.",
-      input: `Wallet score: ${input.score}/100
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: getOpenAiModel(),
+        reasoning: { effort: "low" },
+        instructions:
+          "You are WalletShield AI, a crypto wallet security assistant. Explain risk clearly, avoid fearmongering, and never ask for seed phrases or private keys. Keep output under 120 words. Use plain text with no Markdown.",
+        input: `Wallet score: ${input.score}/100
 Risks: ${input.risks.map((risk) => `${risk.severity}: ${risk.title}`).join("; ") || "none"}
 Approvals: ${input.approvals
-        .slice(0, 8)
-        .map((approval) => `${approval.tokenSymbol} -> ${approval.spenderName}: ${approval.approvedAmount}`)
-        .join("; ") || "none"}
+          .slice(0, 8)
+          .map((approval) => `${approval.tokenSymbol} -> ${approval.spenderName}: ${approval.approvedAmount}`)
+          .join("; ") || "none"}
 Market signals: ${input.marketSignals
-        .slice(0, 5)
-        .map((signal) => `${signal.title}: ${signal.change ?? signal.value}`)
-        .join("; ")}`,
-    }),
-    cache: "no-store",
-  })
+          .slice(0, 5)
+          .map((signal) => `${signal.title}: ${signal.change ?? signal.value}`)
+          .join("; ")}`,
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(12_000),
+    })
 
-  if (!response.ok) return null
-  const payload = await response.json()
-  return extractOpenAiText(payload)
+    if (!response.ok) return null
+    const payload = await response.json()
+    return extractOpenAiText(payload)
+  } catch {
+    return null
+  }
 }
 
 export function extractOpenAiText(payload: any) {
@@ -441,11 +803,19 @@ function sanitizeAssistantText(value: string) {
 export function localSummary(score: number, risks: RiskItem[], approvals: ApprovalItem[]) {
   const critical = risks.filter((risk) => risk.severity === "critical").length
   const high = risks.filter((risk) => risk.severity === "high").length
+  const highApprovals = approvals.filter((approval) => severityRank(approval.severity) >= severityRank("high")).length
   if (critical > 0) {
-    return `This wallet needs immediate attention. I found ${critical} critical signal and ${approvals.length} open approval${approvals.length === 1 ? "" : "s"}. Revoke suspicious spenders first, then move valuable assets only after you have checked recent activity.`
+    const approvalNote =
+      approvals.length > 0
+        ? ` I also found ${approvals.length} open approval${approvals.length === 1 ? "" : "s"} to review.`
+        : " No open approval surfaced in this scan."
+    return `This wallet needs immediate attention. I found ${critical} critical signal${critical === 1 ? "" : "s"}.${approvalNote} Stop signing, review recent activity, and move valuable assets only after you understand the alert.`
+  }
+  if (highApprovals > 0) {
+    return `The wallet is usable but exposed. The biggest issue is high-risk approval surface, especially unlimited allowances. Revoke anything you do not recognize and scan again.`
   }
   if (high > 0) {
-    return `The wallet is usable but exposed. The biggest issue is high-risk approval surface, especially unlimited allowances. Revoke anything you do not recognize and scan again.`
+    return "The wallet is usable but exposed. The main issue is a high-priority alert, such as degraded source coverage, address intelligence, approval exposure, or trading-surface context. Review the detailed alerts before signing again."
   }
   if (score >= 85) {
     return "The wallet looks healthy from the live checks available. Keep approvals short-lived, avoid unknown airdrops, and scan again after connecting to new dApps."

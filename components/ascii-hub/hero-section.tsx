@@ -92,7 +92,7 @@ export function HeroSection() {
         >
           <div className="inline-flex items-center gap-2 border border-border px-3 py-1 font-mono text-xs text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 bg-foreground" />
-            <span>WALLETSHIELD AI // WAVE 1 MVP</span>
+            <span>WALLETSHIELD AI // WAVE 2 SECURITY PLATFORM</span>
           </div>
 
           <h1 className="font-pixel-line text-5xl font-bold leading-none tracking-tight text-foreground text-balance md:text-7xl lg:text-8xl">
@@ -103,8 +103,8 @@ export function HeroSection() {
 
           <p className="max-w-prose font-mono text-sm leading-relaxed text-muted-foreground md:text-base">
             AI-powered crypto wallet security and recovery. Scan approvals,
-            suspicious activity, scam-token exposure, and market risk signals
-            in one calm incident room.
+            suspicious activity, scam-token exposure, SoSoValue campaign risk,
+            SSI index stress, and SoDEX trading context in one calm incident room.
           </p>
         </motion.div>
 
@@ -115,7 +115,7 @@ export function HeroSection() {
           className="flex flex-col items-start gap-4 sm:flex-row"
         >
           <a
-            href="#scanner"
+            href="#dashboard"
             className="group flex items-center gap-2 border border-foreground bg-foreground px-6 py-3 font-mono text-sm text-background transition-all duration-200 hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
           >
             Scan My Wallet
@@ -145,14 +145,16 @@ export function HeroSection() {
             <div className="h-2 w-2 bg-muted-foreground/50" />
             <div className="h-2 w-2 bg-muted-foreground/30" />
             <span className="ml-2 font-mono text-[10px] text-muted-foreground">
-              walletshield ~ wave-1
+              walletshield ~ wave-2
             </span>
           </div>
           <pre className="overflow-hidden font-mono text-[10px] leading-relaxed text-foreground/80 md:text-xs">
 {`> initializing wallet_sentinel...
 > loading approval graph...
 > goplus feeds: armed
-> sosovalue intelligence: ready
+> sosovalue + ssi intelligence: ready
+> sodex read-only context: online
+> score formula: published
 > openai explainer: standby
 > recovery mode: OPERATIONAL
 > _`}

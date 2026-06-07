@@ -13,7 +13,6 @@ const COMMANDS: Record<string, string[]> = {
     "  stack      - Show tech stack",
     "  clear      - Clear terminal",
     "  ascii      - Show ASCII art",
-    "  v0         - ...",
   ],
   sections: [
     "01  Dashboard",
@@ -27,9 +26,10 @@ const COMMANDS: Record<string, string[]> = {
   ],
   inspect: [
     "Module: WalletShield AI",
-    "Version: Wave 1 MVP",
-    "Pipelines: RPC + GoPlus + SoSoValue + OpenAI",
-    "Revocation: client-side wallet transaction",
+    "Version: Wave 2 Security Platform",
+    "Pipelines: RPC + GoPlus + SoSoValue + SSI + SoDEX + OpenAI",
+    "Revocation: eth_call simulated wallet transaction",
+    "Scoring: public weighted formula",
     "Status: OPERATIONAL",
   ],
   about: [
@@ -46,7 +46,8 @@ const COMMANDS: Record<string, string[]> = {
     "Styling:   Tailwind CSS 4",
     "Animation: Framer Motion",
     "Security:  GoPlus APIs",
-    "Intel:     SoSoValue API",
+    "Intel:     SoSoValue API + SSI indexes",
+    "Trading:   SoDEX read-only REST",
     "AI:        OpenAI Responses API",
   ],
   ascii: [
@@ -59,29 +60,10 @@ const COMMANDS: Record<string, string[]> = {
     "  ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝",
     "",
   ],
-  v0: [
-    "",
-    "  ██╗    ██╗      ██████╗ ██╗   ██╗███████╗    ██╗   ██╗ ██████╗ ",
-    "  ██║    ██║     ██╔═══██╗██║   ██║██╔════╝    ██║   ██║██╔═══██╗",
-    "  ██║    ██║     ██║   ██║██║   ██║█████╗      ██║   ██║██║   ██║",
-    "  ██║    ██║     ██║   ██║╚██╗ ██╔╝██╔══╝      ╚██╗ ██╔╝██║   ██║",
-    "  ██████╗███████╗╚██████╔╝ ╚████╔╝ ███████╗     ╚████╔╝ ╚██████╔╝",
-    "  ╚═════╝╚══════╝ ╚═════╝   ╚═══╝  ╚══════╝      ╚═══╝   ╚═════╝ ",
-    "",
-    "  ██╗  ██╗    ██████╗     ██╗  ██╗██████╗ ",
-    "  ██║  ██║   ██╔═████╗    ╚██╗██╔╝╚════██╗",
-    "  ██║  ██║   ██║██╔██║     ╚███╔╝   ███╔═╝",
-    "  ╚██╗██╔╝   ████╔╝██║     ██╔██╗  ██╔══╝ ",
-    "   ╚███╔╝    ╚██████╔╝    ██╔╝ ██╗ ███████╗",
-    "    ╚══╝      ╚═════╝     ╚═╝  ╚═╝ ╚══════╝",
-    "",
-    "  <3  <3  <3  <3  <3  <3  <3  <3  <3  <3",
-    "",
-  ],
 }
 
 interface TerminalLine {
-  type: "input" | "output" | "v0"
+  type: "input" | "output"
   content: string
 }
 
@@ -111,18 +93,6 @@ export function PseudoTerminal() {
     if (trimmed === "clear") {
       setLines([])
       setInput("")
-      return
-    }
-
-    if (trimmed === "v0") {
-      setLines([...baseLines, { type: "output", content: "" }])
-      setInput("")
-      const v0Lines = COMMANDS["v0"]
-      v0Lines.forEach((line, i) => {
-        setTimeout(() => {
-          setLines((prev) => [...prev, { type: "v0", content: line }])
-        }, i * 80)
-      })
       return
     }
 
@@ -202,8 +172,6 @@ export function PseudoTerminal() {
               className={`font-mono text-xs leading-relaxed ${
                 line.type === "input"
                   ? "text-foreground"
-                  : line.type === "v0"
-                  ? "text-foreground brightness-125"
                   : "text-muted-foreground"
               }`}
             >

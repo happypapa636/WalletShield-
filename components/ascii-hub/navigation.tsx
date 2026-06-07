@@ -14,12 +14,12 @@ export function Navigation() {
     const handleScroll = () => {
       setScrolled(window.scrollY > 50)
 
-      const sections = navLinks.map((link) => document.getElementById(link.id))
       const scrollPos = window.scrollY + 120
 
-      for (let i = sections.length - 1; i >= 0; i--) {
-        const section = sections[i]
-        if (section && section.offsetTop <= scrollPos) {
+      for (let i = navLinks.length - 1; i >= 0; i--) {
+        const section = document.getElementById(navLinks[i].id)
+        const sectionTop = section ? section.getBoundingClientRect().top + window.scrollY : 0
+        if (section && section.getClientRects().length > 0 && sectionTop <= scrollPos) {
           setActiveSection(navLinks[i].id)
           return
         }
@@ -41,6 +41,7 @@ export function Navigation() {
   const scrollToSection = (id: string) => {
     setIsMobileMenuOpen(false)
     setActiveSection(id)
+    window.dispatchEvent(new CustomEvent("walletshield:setView", { detail: id }))
     setTimeout(() => {
       const el = document.getElementById(id)
       if (el) {

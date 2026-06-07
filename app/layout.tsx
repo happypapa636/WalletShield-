@@ -21,7 +21,7 @@ export const metadata: Metadata = {
   title: "WalletShield AI | Crypto Wallet Security Assistant",
   description:
     "AI-powered crypto wallet security and recovery assistant for live wallet scans, approval risk, token safety, SoSoValue market context, and incident guidance.",
-  generator: "v0.app",
+  generator: "WalletShield AI",
   keywords: [
     "wallet security",
     "crypto recovery",
@@ -48,13 +48,15 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const analyticsEnabled = process.env.NEXT_PUBLIC_ENABLE_ANALYTICS === "true"
+
   return (
     <html lang="en" className={`dark ${geistPixelLine.variable}`}>
       <body
         className={`${geistMono.variable} ${silkscreen.variable} font-mono antialiased`}
       >
         {children}
-        <Analytics />
+        {analyticsEnabled && <Analytics />}
       </body>
     </html>
   )

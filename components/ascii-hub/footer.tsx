@@ -11,7 +11,7 @@ const ASCII_LOGO = `
     \\_/\\_/  |____/`
 
 const socialLinks = [
-  { name: "Scanner", icon: ShieldCheck, href: "#scanner" },
+  { name: "Scanner", icon: ShieldCheck, href: "#dashboard" },
   { name: "Assistant", icon: Zap, href: "#ai-assistant" },
   { name: "Roadmap", icon: BookOpen, href: "#wave-roadmap" },
 ]
@@ -82,7 +82,7 @@ export function Footer() {
                 Tech Stack
               </span>
               <div className="flex flex-wrap gap-2">
-                {["Next.js", "GoPlus", "SoSoValue", "OpenAI", "EVM"].map((tech) => (
+                {["Next.js", "GoPlus", "SoSoValue", "SSI", "SoDEX", "OpenAI", "EVM"].map((tech) => (
                   <span
                     key={tech}
                     className="border border-border px-2 py-1 font-mono text-[10px] text-muted-foreground"

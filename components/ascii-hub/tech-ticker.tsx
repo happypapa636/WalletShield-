@@ -6,7 +6,10 @@ const TECH_ITEMS = [
   "Wallet Scanner",
   "Approval Manager",
   "GoPlus Security",
-  "SoSoValue Market Intel",
+  "SoSoValue Campaign Radar",
+  "SSI Index Context",
+  "SoDEX Read-Only Context",
+  "Score Formula",
   "OpenAI Explanations",
   "Token Probe",
   "Recovery Center",
@@ -16,8 +19,8 @@ const TECH_ITEMS = [
   "BNB Chain",
   "Arbitrum",
   "Base",
-  "SoDEX Ready",
-  "Wave 1 MVP",
+  "Revoke Simulation",
+  "Wave 2 Platform",
   "Next.js 16",
 ]
 

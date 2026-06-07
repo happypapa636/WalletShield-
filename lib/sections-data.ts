@@ -44,13 +44,13 @@ export const techSections: TechSection[] = [
     title: "Threat Intel",
     subtitle: "Market signals",
     description:
-      "Blend wallet risk with live market context, scam narratives, and SoSoValue intelligence.",
-    ascii: "[SoSoValue] -> [market/news] -> [wallet context]",
+      "Blend wallet risk with SoSoValue market/news feeds, SSI index stress, scam-campaign searches, and SoDEX read-only context.",
+    ascii: "[SoSoValue + SSI + SoDEX] -> [risk context] -> [wallet score]",
     specs: [
-      { label: "Market", value: "Snapshots" },
-      { label: "News", value: "Live feed" },
+      { label: "Market", value: "Snapshots + SSI" },
+      { label: "Campaigns", value: "News search" },
     ],
-    commands: ["$ intel pull --sosovalue", "signals: loaded"],
+    commands: ["$ intel pull --sosovalue --sodex", "signals: loaded"],
   },
   {
     id: "token-check",
@@ -98,12 +98,12 @@ export const techSections: TechSection[] = [
     id: "wave-roadmap",
     number: "07",
     title: "Roadmap",
-    subtitle: "Wave 1 to 3",
+    subtitle: "Wave 2 shipped",
     description:
-      "Show the WaveHack path from MVP scanner to full wallet protection network.",
-    ascii: "[wave 1] -> [wave 2] -> [wave 3]",
+      "Show the WaveHack path from MVP scanner to the Wave 2 security platform and future protection network.",
+    ascii: "[mvp] -> [wave 2 platform] -> [protection network]",
     specs: [
-      { label: "Wave 1", value: "Working MVP" },
+      { label: "Wave 2", value: "Formula + intel" },
       { label: "Wave 3", value: "Protection network" },
     ],
     commands: ["$ roadmap --wavehack", "status: shipping"],

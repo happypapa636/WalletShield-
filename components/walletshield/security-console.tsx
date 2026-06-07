@@ -8,7 +8,10 @@ import {
   Ban,
   Bot,
   CheckCircle2,
+  Clock3,
+  Database,
   ExternalLink,
+  FileText,
   LifeBuoy,
   LockKeyhole,
   Radar,
@@ -22,10 +25,12 @@ import { selectableChains } from "@/lib/walletshield/chains"
 import type {
   ApprovalItem,
   DataSourceStatus,
+  ForensicsEvent,
   MarketSignal,
   RiskItem,
   ScanReport,
   Severity,
+  ThreatCampaign,
   TokenRiskReport,
 } from "@/lib/walletshield/types"
 
@@ -54,9 +59,36 @@ const sourceStyles: Record<DataSourceStatus["status"], string> = {
   error: "text-[#ff3333]",
 }
 
+type WorkspaceView = "approvals" | "intel" | "token" | "assistant" | "recovery" | "roadmap"
+
+const workspaceViews: Array<{ id: WorkspaceView; label: string }> = [
+  { id: "approvals", label: "Approvals" },
+  { id: "intel", label: "Intel" },
+  { id: "token", label: "Token" },
+  { id: "assistant", label: "Assistant" },
+  { id: "recovery", label: "Recovery" },
+  { id: "roadmap", label: "Wave 2" },
+]
+
+type ScanHistoryItem = {
+  address: string
+  chainId: string
+  chainName: string
+  score: number
+  scoreLabel: string
+  scannedAt: string
+  expiresAt?: number
+}
+
+const SCAN_HISTORY_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
 function shortAddress(value?: string) {
   if (!value) return "unknown"
   return `${value.slice(0, 6)}...${value.slice(-4)}`
+}
+
+function isEvmAddress(value?: string) {
+  return /^0x[a-fA-F0-9]{40}$/.test(value ?? "")
 }
 
 function formatDate(timestamp?: number) {
@@ -69,14 +101,78 @@ function formatDate(timestamp?: number) {
 }
 
 function encodeAddress(address: string) {
+  if (!isEvmAddress(address)) throw new Error("Invalid approval address.")
   return address.toLowerCase().replace(/^0x/, "").padStart(64, "0")
+}
+
+function encodeUint256(value: string) {
+  const next = BigInt(value)
+  if (next < BigInt(0)) throw new Error("Invalid token id.")
+  return next.toString(16).padStart(64, "0")
 }
 
 function revokeCalldata(approval: ApprovalItem) {
   if (approval.type === "erc20") {
     return `0x095ea7b3${encodeAddress(approval.spenderAddress)}${"0".repeat(64)}`
   }
+  if (approval.type === "erc721" && approval.approvedForAll === false && approval.approvedTokenId) {
+    return `0x095ea7b3${"0".repeat(64)}${encodeUint256(approval.approvedTokenId)}`
+  }
   return `0xa22cb465${encodeAddress(approval.spenderAddress)}${"0".repeat(64)}`
+}
+
+function pruneScanHistory(value: unknown): ScanHistoryItem[] {
+  if (!Array.isArray(value)) return []
+  const now = Date.now()
+  return value
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") return []
+      const next = item as Partial<ScanHistoryItem>
+      if (
+        !isEvmAddress(next.address) ||
+        !next.chainId ||
+        !next.chainName ||
+        typeof next.score !== "number" ||
+        !next.scoreLabel ||
+        !next.scannedAt
+      ) {
+        return []
+      }
+      const expiresAt = typeof next.expiresAt === "number" ? next.expiresAt : now + SCAN_HISTORY_TTL_MS
+      if (expiresAt <= now) return []
+      return [{ ...next, expiresAt } as ScanHistoryItem]
+    })
+    .slice(0, 8)
+}
+
+function assistantReportContext(report: ScanReport | null) {
+  if (!report) return null
+  return {
+    address: shortAddress(report.address),
+    chainName: report.chainName,
+    score: report.score,
+    scoreLabel: report.scoreLabel,
+    risks: report.risks.slice(0, 6).map((risk) => ({
+      severity: risk.severity,
+      title: risk.title,
+      source: risk.source,
+      action: risk.action,
+    })),
+    approvals: report.approvals
+      .filter((approval) => approval.risky)
+      .slice(0, 5)
+      .map((approval) => ({
+        type: approval.type,
+        tokenSymbol: approval.tokenSymbol,
+        spender: shortAddress(approval.spenderAddress),
+        severity: approval.severity,
+        riskLabels: approval.riskLabels.slice(0, 4),
+      })),
+    dataSources: report.dataSources.map((source) => ({
+      name: source.name,
+      status: source.status,
+    })),
+  }
 }
 
 function SectionHeading({
@@ -191,6 +287,8 @@ export function SecurityConsole() {
   const [isScanning, setIsScanning] = useState(false)
   const [liveWatch, setLiveWatch] = useState(false)
   const [revokeStatus, setRevokeStatus] = useState("")
+  const [activeView, setActiveView] = useState<WorkspaceView>("approvals")
+  const [scanHistory, setScanHistory] = useState<ScanHistoryItem[]>([])
   const [tokenAddress, setTokenAddress] = useState("")
   const [tokenReport, setTokenReport] = useState<TokenRiskReport | null>(null)
   const [tokenError, setTokenError] = useState("")
@@ -213,6 +311,53 @@ export function SecurityConsole() {
     () => selectableChains.find((item) => item.id === chainId) ?? selectableChains[0]!,
     [chainId],
   )
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("walletshield.scanHistory")
+      if (stored) {
+        const next = pruneScanHistory(JSON.parse(stored))
+        setScanHistory(next)
+        if (next.length > 0) {
+          window.localStorage.setItem("walletshield.scanHistory", JSON.stringify(next))
+        } else {
+          window.localStorage.removeItem("walletshield.scanHistory")
+        }
+      }
+    } catch {
+      setScanHistory([])
+    }
+  }, [])
+
+  useEffect(() => {
+    const sectionToView: Record<string, WorkspaceView> = {
+      "approval-manager": "approvals",
+      "threat-intelligence": "intel",
+      "token-check": "token",
+      "ai-assistant": "assistant",
+      "recovery-center": "recovery",
+      "wave-roadmap": "roadmap",
+    }
+    const applySectionView = (id: string) => {
+      const nextView = sectionToView[id]
+      if (nextView) {
+        setActiveView(nextView)
+        window.setTimeout(() => {
+          document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+        }, 50)
+      }
+    }
+    const handleView = (event: Event) => applySectionView((event as CustomEvent<string>).detail)
+    const handleHash = () => applySectionView(window.location.hash.replace(/^#/, ""))
+
+    window.addEventListener("walletshield:setView", handleView)
+    window.addEventListener("hashchange", handleHash)
+    handleHash()
+    return () => {
+      window.removeEventListener("walletshield:setView", handleView)
+      window.removeEventListener("hashchange", handleHash)
+    }
+  }, [])
 
   const connectWallet = useCallback(async () => {
     setScanError("")
@@ -248,6 +393,27 @@ export function SecurityConsole() {
         const payload = await response.json()
         if (!response.ok) throw new Error(payload.error ?? "Wallet scan failed.")
         setReport(payload)
+        const historyItem: ScanHistoryItem = {
+          address: payload.address,
+          chainId: payload.chainId,
+          chainName: payload.chainName,
+          score: payload.score,
+          scoreLabel: payload.scoreLabel,
+          scannedAt: payload.scannedAt,
+          expiresAt: Date.now() + SCAN_HISTORY_TTL_MS,
+        }
+        setScanHistory((current) => {
+          const next = pruneScanHistory([
+            historyItem,
+            ...current.filter(
+              (item) =>
+                item.address.toLowerCase() !== historyItem.address.toLowerCase() ||
+                item.chainId !== historyItem.chainId,
+            ),
+          ])
+          window.localStorage.setItem("walletshield.scanHistory", JSON.stringify(next))
+          return next
+        })
       } catch (error) {
         setScanError(error instanceof Error ? error.message : "Wallet scan failed.")
       } finally {
@@ -292,6 +458,14 @@ export function SecurityConsole() {
       setRevokeStatus("Connect the same wallet before revoking.")
       return
     }
+    if (report?.address && connectedAccount.toLowerCase() !== report.address.toLowerCase()) {
+      setRevokeStatus("Connect the scanned wallet before revoking this approval.")
+      return
+    }
+    if (!isEvmAddress(approval.tokenAddress) || !isEvmAddress(approval.spenderAddress)) {
+      setRevokeStatus("This approval has an invalid token or spender address. Open the explorer and revoke manually.")
+      return
+    }
 
     try {
       const activeChain = await window.ethereum.request({ method: "eth_chainId" })
@@ -302,16 +476,29 @@ export function SecurityConsole() {
         })
       }
 
+      const tx = {
+        from: connectedAccount,
+        to: approval.tokenAddress,
+        value: "0x0",
+        data: revokeCalldata(approval),
+      }
+
+      setRevokeStatus("Simulation running: checking whether this revoke call will revert.")
+      await window.ethereum.request({
+        method: "eth_call",
+        params: [tx, "latest"],
+      })
+
+      setRevokeStatus("Simulation passed. Estimating gas before wallet confirmation.")
+      const gas = await window.ethereum.request({
+        method: "eth_estimateGas",
+        params: [tx],
+      })
+
+      setRevokeStatus("Simulation and gas estimate passed. Confirm the revoke transaction in your wallet.")
       const hash = await window.ethereum.request({
         method: "eth_sendTransaction",
-        params: [
-          {
-            from: connectedAccount,
-            to: approval.tokenAddress,
-            value: "0x0",
-            data: revokeCalldata(approval),
-          },
-        ],
+        params: [{ ...tx, gas }],
       })
       setRevokeStatus(`Revoke submitted: ${hash}`)
     } catch (error) {
@@ -352,7 +539,7 @@ export function SecurityConsole() {
       const response = await fetch("/api/assistant", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: cleanQuestion, report }),
+        body: JSON.stringify({ question: cleanQuestion, report: assistantReportContext(report) }),
       })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error ?? "Assistant failed.")
@@ -458,6 +645,46 @@ export function SecurityConsole() {
                   </div>
                 )}
 
+                {scanHistory.length > 0 && (
+                  <div className="border border-border p-3">
+                    <div className="mb-3 flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <span className="flex items-center gap-2">
+                        <Clock3 size={13} />
+                        Local scan history
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.localStorage.removeItem("walletshield.scanHistory")
+                          setScanHistory([])
+                        }}
+                        className="text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {scanHistory.slice(0, 3).map((item) => (
+                        <button
+                          key={`${item.address}-${item.chainId ?? item.chainName}`}
+                          type="button"
+                          onClick={() => {
+                            const savedChainId =
+                              item.chainId ??
+                              selectableChains.find((chain) => chain.name === item.chainName)?.id
+                            setAddress(item.address)
+                            if (savedChainId) setChainId(savedChainId)
+                          }}
+                          className="flex w-full items-center justify-between gap-3 border border-border px-3 py-2 text-left font-mono text-xs text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+                        >
+                          <span>{shortAddress(item.address)} | {item.chainName}</span>
+                          <span className="text-foreground">{item.score}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {scanError && (
                   <div className="border border-[#ff3333]/60 bg-[#ff3333]/10 px-4 py-3 font-mono text-xs text-[#ff3333]">
                     {scanError}
@@ -508,6 +735,51 @@ export function SecurityConsole() {
                         <div className="mt-2 font-mono text-xl text-foreground">{report.txCount}</div>
                       </div>
                     </div>
+                    <div
+                      className={`border p-3 ${
+                        report.dataConfidence.label === "low"
+                          ? "border-[#ff3333]/60 bg-[#ff3333]/10"
+                          : report.dataConfidence.label === "medium"
+                            ? "border-[#f6c65b]/50 bg-[#f6c65b]/10"
+                            : "border-border"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                          Data Confidence
+                        </div>
+                        <div className="font-mono text-xs uppercase text-foreground">
+                          {report.dataConfidence.score}/100 {report.dataConfidence.label}
+                        </div>
+                      </div>
+                      <p className="mt-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        {report.dataConfidence.warnings.length
+                          ? report.dataConfidence.warnings.join(" ")
+                          : "All core scan sources responded."}
+                      </p>
+                    </div>
+                    <div className="border border-border p-3">
+                      <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                        <FileText size={13} />
+                        Score Formula
+                      </div>
+                      <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        {report.scoreFormula.formula}
+                      </p>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        {report.scoreFormula.weights.map((item) => (
+                          <div key={item.label} className="border border-border px-3 py-2 font-mono text-[11px]">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-muted-foreground">{item.label}</span>
+                              <span className="text-foreground">{Math.round(item.weight * 100)}%</span>
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              {item.score}/100 to {item.contribution.toFixed(1)} pts
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                     <a
                       href={`${report.explorer}/address/${report.address}`}
                       target="_blank"
@@ -531,12 +803,36 @@ export function SecurityConsole() {
         </div>
       </section>
 
-      <section id="approvals" className="border-b border-border">
+      <section id="workspace" className="sticky top-[73px] z-30 border-b border-border bg-background/95 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl gap-2 overflow-x-auto px-4 py-3 lg:px-8">
+          {workspaceViews.map((view) => (
+            <button
+              key={view.id}
+              type="button"
+              onClick={() => {
+                setActiveView(view.id)
+                window.setTimeout(() => {
+                  document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }, 0)
+              }}
+              className={`min-h-10 shrink-0 border px-4 font-mono text-xs uppercase tracking-widest transition-colors focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
+                activeView === view.id
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
+              }`}
+            >
+              {view.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section id="approvals" className={activeView === "approvals" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
             id="approval-manager"
             eyebrow="Approval Manager"
-            title="Danger Permissions"
+            title="Dangerous Permissions"
             copy="Unlimited token approvals and NFT operator permissions are the fastest path from one bad signature to an empty wallet. WalletShield turns them into plain actions."
           />
 
@@ -555,6 +851,30 @@ export function SecurityConsole() {
                     <p className="mt-3 font-mono text-xs text-muted-foreground">{category.note}</p>
                   </div>
                 ))}
+                <div className="border border-border p-4">
+                  <div className="mb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                    Score Deductions
+                  </div>
+                  {report.scoreFormula.deductions.length > 0 ? (
+                    <div className="space-y-2">
+                      {report.scoreFormula.deductions.map((factor) => (
+                        <div key={factor.label} className="border border-border px-3 py-2 font-mono text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-foreground">{factor.label}</span>
+                            <span className={severityStyles[factor.severity].split(" ").slice(0, 1).join(" ")}>
+                              {factor.impact}
+                            </span>
+                          </div>
+                          <p className="mt-1 leading-relaxed text-muted-foreground">{factor.detail}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="font-mono text-xs text-muted-foreground">
+                      No material deduction was applied by the current formula.
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -619,7 +939,7 @@ export function SecurityConsole() {
         </div>
       </section>
 
-      <section id="threat-intel" className="border-b border-border">
+      <section id="threat-intel" className={activeView === "intel" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
             id="threat-intelligence"
@@ -639,24 +959,68 @@ export function SecurityConsole() {
               ) : (
                 <EmptyState title="No report loaded" copy="Scan a wallet to see prioritized risk findings." />
               )}
+
+              <div className="flex items-center gap-2 border-b border-border pt-5 pb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                <Clock3 size={15} />
+                Forensics Timeline
+              </div>
+              {report ? (
+                report.forensics.map((event) => <ForensicsRow key={event.id} event={event} />)
+              ) : (
+                <EmptyState title="No timeline yet" copy="Run a scan to build approval, reputation, and campaign evidence." />
+              )}
             </div>
 
             <div className="space-y-3">
               <div className="flex items-center gap-2 border-b border-border pb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
-                <Activity size={15} />
-                SoSoValue Signals
+                <Database size={15} />
+                Campaign Watch
               </div>
               {report ? (
-                report.marketSignals.map((signal) => <MarketRow key={signal.id} signal={signal} />)
+                report.threatCampaigns.length > 0 ? (
+                  report.threatCampaigns.map((campaign) => (
+                    <CampaignRow key={campaign.id} campaign={campaign} />
+                  ))
+                ) : (
+                  <EmptyState title="No campaign match" copy="SoSoValue scam-keyword searches did not return active matches for this scan." />
+                )
+              ) : (
+                <EmptyState title="Waiting for scan" copy="SoSoValue campaign searches load with the wallet report." />
+              )}
+
+              <div className="flex items-center gap-2 border-b border-border pb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                <Activity size={15} />
+                Market Signals
+              </div>
+              {report ? (
+                report.marketSignals.length > 0 ? (
+                  report.marketSignals.map((signal) => <MarketRow key={signal.id} signal={signal} />)
+                ) : (
+                  <EmptyState title="No market signals" copy="SoSoValue did not return usable market signals for this scan." />
+                )
               ) : (
                 <EmptyState title="Waiting for scan" copy="Market intelligence loads with the wallet report." />
+              )}
+
+              <div className="flex items-center gap-2 border-b border-border pt-5 pb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                <LockKeyhole size={15} />
+                SoDEX Read-Only Context
+              </div>
+              {report ? (
+                report.dexSignals.length > 0 ? (
+                  report.dexSignals.map((signal) => <MarketRow key={signal.id} signal={signal} />)
+                ) : (
+                  <EmptyState title="No SoDEX signal" copy="SoDEX public market and signing-key checks returned no extra signal." />
+                )
+              ) : (
+                <EmptyState title="Waiting for scan" copy="SoDEX spot/perps and account-key context loads with the wallet report." />
               )}
             </div>
           </div>
         </div>
       </section>
 
-      <section id="token-probe" className="border-b border-border">
+      <section id="token-probe" className={activeView === "token" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
             id="token-check"
@@ -731,7 +1095,7 @@ export function SecurityConsole() {
         </div>
       </section>
 
-      <section id="assistant" className="border-b border-border">
+      <section id="assistant" className={activeView === "assistant" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
             id="ai-assistant"
@@ -747,6 +1111,9 @@ export function SecurityConsole() {
                 <span className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
                   WalletShield AI
                 </span>
+              </div>
+              <div className="border-b border-border px-4 py-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                AI answers use a redacted scan digest. Full wallet and spender addresses are shortened before model requests.
               </div>
               <div className="flex h-[28rem] flex-col">
                 <div className="flex-1 space-y-3 overflow-y-auto p-4">
@@ -811,7 +1178,7 @@ export function SecurityConsole() {
         </div>
       </section>
 
-      <section id="recovery" className="border-b border-border">
+      <section id="recovery" className={activeView === "recovery" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
             id="recovery-center"
@@ -861,12 +1228,26 @@ export function SecurityConsole() {
                   </div>
                 ))}
               </div>
+              {report?.scoreFormula.validationNotes && (
+                <div className="mt-5 border-t border-border pt-5">
+                  <div className="mb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                    Model Limits
+                  </div>
+                  <div className="space-y-2">
+                    {report.scoreFormula.validationNotes.map((note) => (
+                      <div key={note} className="border border-border p-3 font-mono text-xs leading-relaxed text-muted-foreground">
+                        {note}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </section>
 
-      <section id="roadmap" className="border-b border-border">
+      <section id="roadmap" className={activeView === "roadmap" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
             id="wave-roadmap"
@@ -877,7 +1258,7 @@ export function SecurityConsole() {
           <div className="grid gap-4 lg:grid-cols-3">
             {[
               ["Wave 1", "Live scan, wallet score, approvals, token probe, SoSoValue context, AI assistant."],
-              ["Wave 2", "Deeper forensics, real-time monitors, richer threat database, multi-chain revoke flows."],
+              ["Wave 2", "Score formula, SoSoValue campaign watch, SSI index context, SoDEX market data, local history, revoke simulation."],
               ["Wave 3", "Browser extension, pre-sign warnings, reputation engine, community reports, notification channels."],
             ].map(([title, copy]) => (
               <div key={title} className="border border-border p-5">
@@ -903,6 +1284,62 @@ function RiskRow({ risk }: { risk: RiskItem }) {
       </div>
       <p className="mt-3 font-mono text-xs leading-relaxed text-muted-foreground">{risk.explanation}</p>
       <p className="mt-3 font-mono text-xs text-foreground">{risk.action}</p>
+    </div>
+  )
+}
+
+function CampaignRow({ campaign }: { campaign: ThreatCampaign }) {
+  return (
+    <div className="border border-border p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`border px-2 py-1 font-mono text-[10px] uppercase ${severityStyles[campaign.severity]}`}>
+              {campaign.severity}
+            </span>
+            <span className="font-mono text-sm text-foreground">{campaign.title}</span>
+          </div>
+          <p className="mt-3 font-mono text-xs leading-relaxed text-muted-foreground">{campaign.detail}</p>
+        </div>
+        <div className="font-mono text-xs text-muted-foreground md:text-right">
+          {campaign.mentionCount} mention{campaign.mentionCount === 1 ? "" : "s"}
+          <div className="mt-1 text-[10px] uppercase tracking-widest">{campaign.keyword}</div>
+        </div>
+      </div>
+      {campaign.url && (
+        <a
+          href={campaign.url}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-3 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
+        >
+          SoSoValue source <ExternalLink size={12} />
+        </a>
+      )}
+    </div>
+  )
+}
+
+function ForensicsRow({ event }: { event: ForensicsEvent }) {
+  return (
+    <div className="border border-border p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`border px-2 py-1 font-mono text-[10px] uppercase ${severityStyles[event.severity]}`}>
+          {event.severity}
+        </span>
+        <span className="font-mono text-sm text-foreground">{event.title}</span>
+      </div>
+      <p className="mt-3 font-mono text-xs leading-relaxed text-muted-foreground">{event.detail}</p>
+      {event.action && <p className="mt-3 font-mono text-xs text-foreground">{event.action}</p>}
+      <div className="mt-3 flex flex-wrap gap-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+        <span>{event.source}</span>
+        {event.observedAt && <span>{new Date(event.observedAt).toLocaleString()}</span>}
+        {event.explorerUrl && (
+          <a href={event.explorerUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-foreground">
+            Open source <ExternalLink size={11} />
+          </a>
+        )}
+      </div>
     </div>
   )
 }

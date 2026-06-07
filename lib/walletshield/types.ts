@@ -34,6 +34,8 @@ export interface ApprovalItem {
   spenderName: string
   spenderTag?: string
   approvedAmount: string
+  approvedForAll?: boolean
+  approvedTokenId?: string
   approvedAt?: number
   txHash?: string
   risky: boolean
@@ -53,16 +55,65 @@ export interface MarketSignal {
   url?: string
 }
 
+export interface ThreatCampaign {
+  id: string
+  title: string
+  keyword: string
+  mentionCount: number
+  severity: Severity
+  source: string
+  detail: string
+  url?: string
+}
+
 export interface ScoreCategory {
   label: string
   score: number
   note: string
 }
 
+export interface ScoreFactor {
+  label: string
+  impact: number
+  severity: Severity
+  detail: string
+}
+
+export interface ScoreFormula {
+  formula: string
+  weights: Array<{
+    label: string
+    weight: number
+    score: number
+    contribution: number
+    note: string
+  }>
+  deductions: ScoreFactor[]
+  validationNotes: string[]
+}
+
 export interface DataSourceStatus {
   name: string
   status: "live" | "fallback" | "unconfigured" | "error"
   detail: string
+}
+
+export interface DataConfidence {
+  score: number
+  label: "high" | "medium" | "low"
+  warnings: string[]
+}
+
+export interface ForensicsEvent {
+  id: string
+  title: string
+  severity: Severity
+  source: string
+  detail: string
+  action?: string
+  observedAt?: string
+  txHash?: string
+  explorerUrl?: string
 }
 
 export interface ScanReport {
@@ -77,12 +128,17 @@ export interface ScanReport {
   score: number
   scoreLabel: string
   categories: ScoreCategory[]
+  scoreFormula: ScoreFormula
   risks: RiskItem[]
   approvals: ApprovalItem[]
   marketSignals: MarketSignal[]
+  threatCampaigns: ThreatCampaign[]
+  dexSignals: MarketSignal[]
+  forensics: ForensicsEvent[]
   recoveryPlan: string[]
   aiSummary: string
   dataSources: DataSourceStatus[]
+  dataConfidence: DataConfidence
 }
 
 export interface TokenRiskReport {

@@ -49,7 +49,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     rpcEnv: "BASE_RPC_URL",
     fallbackRpc: "https://base.publicnode.com",
     explorer: "https://basescan.org",
-    goplusSupported: false,
+    goplusSupported: true,
   },
 }
 
@@ -63,6 +63,17 @@ export function normalizeChainId(input?: string | number | null) {
 export function getChainConfig(input?: string | number | null) {
   const chainId = normalizeChainId(input)
   return CHAINS[chainId] ?? CHAINS["1"]
+}
+
+export function isSupportedChainId(input?: string | number | null) {
+  const chainId = normalizeChainId(input)
+  return Boolean(CHAINS[chainId])
+}
+
+export function supportedChainNames() {
+  return Object.values(CHAINS)
+    .map((chain) => chain.name)
+    .join(", ")
 }
 
 export const selectableChains = Object.values(CHAINS)
