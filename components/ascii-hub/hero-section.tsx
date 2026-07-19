@@ -116,7 +116,7 @@ export function HeroSection() {
         >
           <a
             href="#dashboard"
-            className="group flex items-center gap-2 border border-foreground bg-foreground px-6 py-3 font-mono text-sm text-background transition-all duration-200 hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+            className="group flex items-center gap-2 border border-foreground bg-foreground px-6 py-3 font-mono text-sm text-background transition-colors duration-200 hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
           >
             Scan My Wallet
             <span className="transition-transform duration-200 group-hover:translate-x-1">
@@ -125,7 +125,7 @@ export function HeroSection() {
           </a>
           <a
             href="#ai-assistant"
-            className="flex items-center gap-2 border border-border px-6 py-3 font-mono text-sm text-muted-foreground transition-all duration-200 hover:border-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+            className="flex items-center gap-2 border border-border px-6 py-3 font-mono text-sm text-muted-foreground transition-colors duration-200 hover:border-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
           >
             Ask WalletShield AI
           </a>

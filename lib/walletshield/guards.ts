@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
+import { createHash, randomUUID } from "node:crypto"
 import type { ZodSchema } from "zod"
+import { consumeQuota } from "./shared-rate-limit"
 
 type RouteName = "scan" | "token-risk" | "assistant"
 
@@ -15,9 +17,6 @@ const GLOBAL_RATE_LIMITS: Record<RouteName, { limit: number; windowMs: number }>
   assistant: { limit: 90, windowMs: 60_000 },
 }
 
-const buckets = new Map<string, { count: number; resetAt: number }>()
-let requestCount = 0
-
 export const apiHeaders = {
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
@@ -26,6 +25,7 @@ export const apiHeaders = {
 
 export function apiJson(body: unknown, init?: ResponseInit) {
   const headers = new Headers(apiHeaders)
+  headers.set("x-walletshield-request-id", randomUUID())
   if (init?.headers) {
     new Headers(init.headers).forEach((value, key) => headers.set(key, value))
   }
@@ -50,57 +50,34 @@ function clientKey(request: Request) {
   return `${ip}:${userAgent}`
 }
 
-function cleanupBuckets(now: number) {
-  requestCount += 1
-  if (requestCount % 100 !== 0 && buckets.size < 5_000) return
-
-  for (const [key, bucket] of buckets.entries()) {
-    if (bucket.resetAt <= now) buckets.delete(key)
-  }
+function stableClientKey(request: Request) {
+  return createHash("sha256").update(clientKey(request)).digest("hex").slice(0, 32)
 }
 
-function consumeBucket(key: string, limit: number, windowMs: number, now: number) {
-  const current = buckets.get(key)
-
-  if (!current || current.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs })
-    return null
-  }
-
-  if (current.count >= limit) return current
-
-  current.count += 1
-  return null
-}
-
-export function rateLimit(request: Request, route: RouteName) {
+export async function rateLimit(request: Request, route: RouteName) {
   const config = RATE_LIMITS[route]
   const globalConfig = GLOBAL_RATE_LIMITS[route]
-  const now = Date.now()
-  cleanupBuckets(now)
 
-  const globalBucket = consumeBucket(
+  const globalBucket = await consumeQuota(
     `${route}:global`,
     globalConfig.limit,
     globalConfig.windowMs,
-    now,
   )
-  const clientBucket = consumeBucket(
-    `${route}:${clientKey(request)}`,
+  const clientBucket = await consumeQuota(
+    `${route}:client:${stableClientKey(request)}`,
     config.limit,
     config.windowMs,
-    now,
   )
-  const limitedBucket = globalBucket ?? clientBucket
+  const limitedBucket = globalBucket.limited ? globalBucket : clientBucket.limited ? clientBucket : null
 
   if (limitedBucket) {
-    const retryAfter = Math.max(1, Math.ceil((limitedBucket.resetAt - now) / 1000))
     return apiJson(
       { error: "Too many requests. Wait a moment, then try again." },
       {
         status: 429,
         headers: {
-          "retry-after": String(retryAfter),
+          "retry-after": String(limitedBucket.retryAfterSeconds),
+          "x-walletshield-rate-limit-source": limitedBucket.source,
         },
       },
     )

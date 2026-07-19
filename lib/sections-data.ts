@@ -53,8 +53,22 @@ export const techSections: TechSection[] = [
     commands: ["$ intel pull --sosovalue --sodex", "signals: loaded"],
   },
   {
-    id: "token-check",
+    id: "protection-radar",
     number: "04",
+    title: "Radar",
+    subtitle: "Wave 3 watch",
+    description:
+      "Track user-supplied wallets through live rescans and combine source health with SoSoValue macro and campaign context.",
+    ascii: "[watchlist] -> [scan api] -> [macro + campaign radar]",
+    specs: [
+      { label: "Storage", value: "Browser-local" },
+      { label: "Macro", value: "SoSoValue events" },
+    ],
+    commands: ["$ radar add 0x...", "$ radar scan --all"],
+  },
+  {
+    id: "token-check",
+    number: "05",
     title: "Token Probe",
     subtitle: "Scam detection",
     description:
@@ -68,7 +82,7 @@ export const techSections: TechSection[] = [
   },
   {
     id: "ai-assistant",
-    number: "05",
+    number: "06",
     title: "AI Assistant",
     subtitle: "Plain English",
     description:
@@ -82,7 +96,7 @@ export const techSections: TechSection[] = [
   },
   {
     id: "recovery-center",
-    number: "06",
+    number: "07",
     title: "Recovery",
     subtitle: "Incident steps",
     description:
@@ -96,15 +110,15 @@ export const techSections: TechSection[] = [
   },
   {
     id: "wave-roadmap",
-    number: "07",
+    number: "08",
     title: "Roadmap",
-    subtitle: "Wave 2 shipped",
+    subtitle: "Wave 3 shipped",
     description:
-      "Show the WaveHack path from MVP scanner to the Wave 2 security platform and future protection network.",
-    ascii: "[mvp] -> [wave 2 platform] -> [protection network]",
+      "Show the WaveHack path from MVP scanner to the Wave 3 web protection platform and future browser/community network.",
+    ascii: "[mvp] -> [wave 2 platform] -> [wave 3 radar]",
     specs: [
       { label: "Wave 2", value: "Formula + intel" },
-      { label: "Wave 3", value: "Protection network" },
+      { label: "Wave 3", value: "Radar + watchlist" },
     ],
     commands: ["$ roadmap --wavehack", "status: shipping"],
   },

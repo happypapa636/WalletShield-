@@ -6,7 +6,7 @@ export interface ChainConfig {
   name: string
   nativeSymbol: string
   rpcEnv: string
-  fallbackRpc: string
+  fallbackRpcEnv: string
   explorer: string
   goplusSupported: boolean
 }
@@ -94,7 +94,7 @@ export interface ScoreFormula {
 
 export interface DataSourceStatus {
   name: string
-  status: "live" | "fallback" | "unconfigured" | "error"
+  status: "live" | "partial" | "fallback" | "unconfigured" | "rate_limited" | "error"
   detail: string
 }
 
@@ -116,6 +116,15 @@ export interface ForensicsEvent {
   explorerUrl?: string
 }
 
+export interface MacroEvent {
+  id: string
+  date: string
+  eventName: string
+  severity: Severity
+  source: string
+  detail: string
+}
+
 export interface ScanReport {
   address: string
   chainId: string
@@ -133,6 +142,7 @@ export interface ScanReport {
   approvals: ApprovalItem[]
   marketSignals: MarketSignal[]
   threatCampaigns: ThreatCampaign[]
+  macroEvents: MacroEvent[]
   dexSignals: MarketSignal[]
   forensics: ForensicsEvent[]
   recoveryPlan: string[]

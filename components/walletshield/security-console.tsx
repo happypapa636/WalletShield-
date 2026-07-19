@@ -22,10 +22,12 @@ import {
   Zap,
 } from "lucide-react"
 import { selectableChains } from "@/lib/walletshield/chains"
+import { revokeCalldata } from "@/lib/walletshield/revoke"
 import type {
   ApprovalItem,
   DataSourceStatus,
   ForensicsEvent,
+  MacroEvent,
   MarketSignal,
   RiskItem,
   ScanReport,
@@ -45,29 +47,32 @@ declare global {
 }
 
 const severityStyles: Record<Severity, string> = {
-  critical: "text-[#ff3333] border-[#ff3333]/60 bg-[#ff3333]/10",
-  high: "text-[#ff6b4a] border-[#ff6b4a]/50 bg-[#ff6b4a]/10",
-  medium: "text-[#f6c65b] border-[#f6c65b]/50 bg-[#f6c65b]/10",
+  critical: "text-[var(--signal-critical)] border-[var(--signal-critical)] bg-[var(--signal-critical-bg)]",
+  high: "text-[var(--signal-high)] border-[var(--signal-high)] bg-[var(--signal-high-bg)]",
+  medium: "text-[var(--signal-medium)] border-[var(--signal-medium)] bg-[var(--signal-medium-bg)]",
   low: "text-foreground border-border bg-secondary/30",
   info: "text-muted-foreground border-border bg-transparent",
 }
 
 const sourceStyles: Record<DataSourceStatus["status"], string> = {
   live: "text-foreground",
+  partial: "text-[var(--signal-medium)]",
   fallback: "text-muted-foreground",
-  unconfigured: "text-[#f6c65b]",
-  error: "text-[#ff3333]",
+  unconfigured: "text-[var(--signal-medium)]",
+  rate_limited: "text-[var(--signal-medium)]",
+  error: "text-[var(--signal-critical)]",
 }
 
-type WorkspaceView = "approvals" | "intel" | "token" | "assistant" | "recovery" | "roadmap"
+type WorkspaceView = "approvals" | "intel" | "radar" | "token" | "assistant" | "recovery" | "roadmap"
 
 const workspaceViews: Array<{ id: WorkspaceView; label: string }> = [
   { id: "approvals", label: "Approvals" },
   { id: "intel", label: "Intel" },
+  { id: "radar", label: "Radar" },
   { id: "token", label: "Token" },
   { id: "assistant", label: "Assistant" },
   { id: "recovery", label: "Recovery" },
-  { id: "roadmap", label: "Wave 2" },
+  { id: "roadmap", label: "Wave 3" },
 ]
 
 type ScanHistoryItem = {
@@ -81,6 +86,22 @@ type ScanHistoryItem = {
 }
 
 const SCAN_HISTORY_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const PROTECTION_WATCHLIST_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+type ProtectionWatchItem = {
+  id: string
+  address: string
+  chainId: string
+  chainName: string
+  addedAt: string
+  expiresAt?: number
+  status: "idle" | "scanning" | "ok" | "error"
+  latestScore?: number
+  latestLabel?: string
+  lastScannedAt?: string
+  dataConfidenceLabel?: ScanReport["dataConfidence"]["label"]
+  error?: string
+}
 
 function shortAddress(value?: string) {
   if (!value) return "unknown"
@@ -89,6 +110,10 @@ function shortAddress(value?: string) {
 
 function isEvmAddress(value?: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value ?? "")
+}
+
+function isSelectableChain(chainId: string) {
+  return selectableChains.some((chain) => chain.id === chainId)
 }
 
 function formatDate(timestamp?: number) {
@@ -100,25 +125,13 @@ function formatDate(timestamp?: number) {
   }).format(new Date(timestamp * 1000))
 }
 
-function encodeAddress(address: string) {
-  if (!isEvmAddress(address)) throw new Error("Invalid approval address.")
-  return address.toLowerCase().replace(/^0x/, "").padStart(64, "0")
-}
-
-function encodeUint256(value: string) {
-  const next = BigInt(value)
-  if (next < BigInt(0)) throw new Error("Invalid token id.")
-  return next.toString(16).padStart(64, "0")
-}
-
-function revokeCalldata(approval: ApprovalItem) {
-  if (approval.type === "erc20") {
-    return `0x095ea7b3${encodeAddress(approval.spenderAddress)}${"0".repeat(64)}`
-  }
-  if (approval.type === "erc721" && approval.approvedForAll === false && approval.approvedTokenId) {
-    return `0x095ea7b3${"0".repeat(64)}${encodeUint256(approval.approvedTokenId)}`
-  }
-  return `0xa22cb465${encodeAddress(approval.spenderAddress)}${"0".repeat(64)}`
+function formatDateString(value?: string) {
+  if (!value) return "unknown"
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00Z`))
 }
 
 function pruneScanHistory(value: unknown): ScanHistoryItem[] {
@@ -143,6 +156,65 @@ function pruneScanHistory(value: unknown): ScanHistoryItem[] {
       return [{ ...next, expiresAt } as ScanHistoryItem]
     })
     .slice(0, 8)
+}
+
+function saveScanHistory(items: ScanHistoryItem[]) {
+  try {
+    if (items.length > 0) {
+      window.localStorage.setItem("walletshield.scanHistory", JSON.stringify(items))
+    } else {
+      window.localStorage.removeItem("walletshield.scanHistory")
+    }
+  } catch {
+    // Browser storage can be disabled; scan results still remain visible for the session.
+  }
+}
+
+function watchlistId(address: string, chainId: string) {
+  return `${chainId}:${address.toLowerCase()}`
+}
+
+function pruneProtectionWatchlist(value: unknown): ProtectionWatchItem[] {
+  if (!Array.isArray(value)) return []
+  const now = Date.now()
+  return value
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") return []
+      const next = item as Partial<ProtectionWatchItem>
+      const address = next.address
+      if (typeof address !== "string" || !isEvmAddress(address) || !next.chainId || !next.chainName || !next.addedAt) return []
+      const expiresAt = typeof next.expiresAt === "number" ? next.expiresAt : now + PROTECTION_WATCHLIST_TTL_MS
+      if (expiresAt <= now) return []
+      return [
+        {
+          id: next.id ?? watchlistId(address, next.chainId),
+          address,
+          chainId: next.chainId,
+          chainName: next.chainName,
+          addedAt: next.addedAt,
+          expiresAt,
+          status: next.status === "ok" || next.status === "error" ? next.status : "idle",
+          latestScore: typeof next.latestScore === "number" ? next.latestScore : undefined,
+          latestLabel: next.latestLabel,
+          lastScannedAt: next.lastScannedAt,
+          dataConfidenceLabel: next.dataConfidenceLabel,
+          error: next.error,
+        } satisfies ProtectionWatchItem,
+      ]
+    })
+    .slice(0, 8)
+}
+
+function saveProtectionWatchlist(items: ProtectionWatchItem[]) {
+  try {
+    if (items.length > 0) {
+      window.localStorage.setItem("walletshield.protectionWatchlist", JSON.stringify(items))
+    } else {
+      window.localStorage.removeItem("walletshield.protectionWatchlist")
+    }
+  } catch {
+    // Browser storage can be disabled; the in-memory list still works for the session.
+  }
 }
 
 function assistantReportContext(report: ScanReport | null) {
@@ -178,23 +250,27 @@ function assistantReportContext(report: ScanReport | null) {
 function SectionHeading({
   id,
   eyebrow,
+  showLabel = false,
   title,
   copy,
 }: {
   id: string
   eyebrow: string
+  showLabel?: boolean
   title: string
   copy: string
 }) {
   return (
     <div id={id} className="mb-8 scroll-mt-24">
-      <div className="mb-4 flex items-center gap-4">
-        <span className="font-mono text-sm text-muted-foreground">{">"}</span>
-        <div className="h-px w-12 bg-border" />
-        <span className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          {eyebrow}
-        </span>
-      </div>
+      {showLabel && (
+        <div className="mb-4 flex items-center gap-4">
+          <span className="font-mono text-sm text-muted-foreground">{">"}</span>
+          <div className="h-px w-12 bg-border" />
+          <span className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+            {eyebrow}
+          </span>
+        </div>
+      )}
       <h2 className="font-pixel-line text-3xl font-bold tracking-tight text-foreground md:text-5xl">
         {title}
       </h2>
@@ -222,7 +298,7 @@ function IconButton({
     variant === "primary"
       ? "border-foreground bg-foreground text-background hover:bg-transparent hover:text-foreground"
       : variant === "danger"
-      ? "border-[#ff3333] text-[#ff3333] hover:bg-[#ff3333] hover:text-background"
+      ? "border-[var(--signal-critical)] text-[var(--signal-critical)] hover:bg-[var(--signal-critical)] hover:text-background"
       : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
 
   return (
@@ -230,7 +306,7 @@ function IconButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex min-h-11 items-center justify-center gap-2 border px-4 py-2 font-mono text-xs transition-all duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 ${className}`}
+      className={`inline-flex min-h-11 items-center justify-center gap-2 border px-4 py-2 font-mono text-xs transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 ${className}`}
     >
       {children}
     </button>
@@ -245,13 +321,13 @@ function ScoreDial({ score, label }: { score: number; label: string }) {
   return (
     <div className="relative flex aspect-square min-h-56 w-full max-w-72 items-center justify-center">
       <svg className="absolute inset-0 h-full w-full -rotate-90" viewBox="0 0 100 100" aria-hidden="true">
-        <circle cx="50" cy="50" r={radius} fill="none" stroke="#262626" strokeWidth="7" />
+        <circle cx="50" cy="50" r={radius} fill="none" stroke="var(--border)" strokeWidth="7" />
         <circle
           cx="50"
           cy="50"
           r={radius}
           fill="none"
-          stroke="#ffffff"
+          stroke="var(--foreground)"
           strokeWidth="7"
           strokeDasharray={circumference}
           strokeDashoffset={dashOffset}
@@ -289,6 +365,10 @@ export function SecurityConsole() {
   const [revokeStatus, setRevokeStatus] = useState("")
   const [activeView, setActiveView] = useState<WorkspaceView>("approvals")
   const [scanHistory, setScanHistory] = useState<ScanHistoryItem[]>([])
+  const [watchlistAddress, setWatchlistAddress] = useState("")
+  const [protectionWatchlist, setProtectionWatchlist] = useState<ProtectionWatchItem[]>([])
+  const [watchlistStatus, setWatchlistStatus] = useState("")
+  const [isWatchlistScanning, setIsWatchlistScanning] = useState(false)
   const [tokenAddress, setTokenAddress] = useState("")
   const [tokenReport, setTokenReport] = useState<TokenRiskReport | null>(null)
   const [tokenError, setTokenError] = useState("")
@@ -330,9 +410,23 @@ export function SecurityConsole() {
   }, [])
 
   useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("walletshield.protectionWatchlist")
+      if (stored) {
+        const next = pruneProtectionWatchlist(JSON.parse(stored))
+        setProtectionWatchlist(next)
+        saveProtectionWatchlist(next)
+      }
+    } catch {
+      setProtectionWatchlist([])
+    }
+  }, [])
+
+  useEffect(() => {
     const sectionToView: Record<string, WorkspaceView> = {
       "approval-manager": "approvals",
       "threat-intelligence": "intel",
+      "protection-radar": "radar",
       "token-check": "token",
       "ai-assistant": "assistant",
       "recovery-center": "recovery",
@@ -366,12 +460,21 @@ export function SecurityConsole() {
       return
     }
 
-    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" })
-    const activeChain = await window.ethereum.request({ method: "eth_chainId" })
-    const account = accounts?.[0] ?? ""
-    setConnectedAccount(account)
-    setAddress(account)
-    setChainId(String(Number.parseInt(activeChain, 16)))
+    try {
+      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" })
+      const activeChain = await window.ethereum.request({ method: "eth_chainId" })
+      const account = accounts?.[0] ?? ""
+      const nextChainId = String(Number.parseInt(activeChain, 16))
+      setConnectedAccount(account)
+      setAddress(account)
+      if (isSelectableChain(nextChainId)) {
+        setChainId(nextChainId)
+      } else {
+        setScanError("Connected wallet is on an unsupported chain. Choose a supported chain in the scanner before scanning.")
+      }
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "Wallet connection was rejected.")
+    }
   }, [])
 
   const runScan = useCallback(
@@ -393,6 +496,23 @@ export function SecurityConsole() {
         const payload = await response.json()
         if (!response.ok) throw new Error(payload.error ?? "Wallet scan failed.")
         setReport(payload)
+        setProtectionWatchlist((current) => {
+          const next = current.map((item) =>
+            item.id === watchlistId(payload.address, payload.chainId)
+              ? {
+                  ...item,
+                  status: "ok" as const,
+                  latestScore: payload.score,
+                  latestLabel: payload.scoreLabel,
+                  lastScannedAt: payload.scannedAt,
+                  dataConfidenceLabel: payload.dataConfidence.label,
+                  error: undefined,
+                }
+              : item,
+          )
+          saveProtectionWatchlist(next)
+          return next
+        })
         const historyItem: ScanHistoryItem = {
           address: payload.address,
           chainId: payload.chainId,
@@ -411,7 +531,7 @@ export function SecurityConsole() {
                 item.chainId !== historyItem.chainId,
             ),
           ])
-          window.localStorage.setItem("walletshield.scanHistory", JSON.stringify(next))
+          saveScanHistory(next)
           return next
         })
       } catch (error) {
@@ -423,6 +543,116 @@ export function SecurityConsole() {
     [address, chainId],
   )
 
+  const addWatchlistWallet = () => {
+    const nextAddress = watchlistAddress.trim()
+    setWatchlistStatus("")
+    if (!isEvmAddress(nextAddress)) {
+      setWatchlistStatus("Enter a valid EVM wallet address before adding it to the protection radar.")
+      return
+    }
+
+    const item: ProtectionWatchItem = {
+      id: watchlistId(nextAddress, selectedChain.id),
+      address: nextAddress,
+      chainId: selectedChain.id,
+      chainName: selectedChain.name,
+      addedAt: new Date().toISOString(),
+      expiresAt: Date.now() + PROTECTION_WATCHLIST_TTL_MS,
+      status: "idle",
+    }
+
+    setProtectionWatchlist((current) => {
+      const next = pruneProtectionWatchlist([
+        item,
+        ...current.filter((currentItem) => currentItem.id !== item.id),
+      ])
+      saveProtectionWatchlist(next)
+      return next
+    })
+    setWatchlistAddress("")
+    setWatchlistStatus("Wallet added. Run a watchlist scan to refresh its live score.")
+  }
+
+  const removeWatchlistWallet = (id: string) => {
+    setProtectionWatchlist((current) => {
+      const next = current.filter((item) => item.id !== id)
+      saveProtectionWatchlist(next)
+      return next
+    })
+  }
+
+  const clearWatchlist = () => {
+    setProtectionWatchlist([])
+    saveProtectionWatchlist([])
+    setWatchlistStatus("Protection watchlist cleared from this browser.")
+  }
+
+  const scanWatchlistWallet = async (target: ProtectionWatchItem) => {
+    setProtectionWatchlist((current) => {
+      const next = current.map((item) =>
+        item.id === target.id ? { ...item, status: "scanning" as const, error: undefined } : item,
+      )
+      saveProtectionWatchlist(next)
+      return next
+    })
+
+    try {
+      const response = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: target.address, chainId: target.chainId }),
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error ?? "Watchlist scan failed.")
+
+      setProtectionWatchlist((current) => {
+        const next = current.map((item) =>
+          item.id === target.id
+            ? {
+                ...item,
+                status: "ok" as const,
+                latestScore: payload.score,
+                latestLabel: payload.scoreLabel,
+                lastScannedAt: payload.scannedAt,
+                dataConfidenceLabel: payload.dataConfidence.label,
+                error: undefined,
+              }
+            : item,
+        )
+        saveProtectionWatchlist(next)
+        return next
+      })
+    } catch (error) {
+      setProtectionWatchlist((current) => {
+        const next = current.map((item) =>
+          item.id === target.id
+            ? {
+                ...item,
+                status: "error" as const,
+                error: error instanceof Error ? error.message : "Watchlist scan failed.",
+              }
+            : item,
+        )
+        saveProtectionWatchlist(next)
+        return next
+      })
+    }
+  }
+
+  const scanWatchlist = async () => {
+    if (protectionWatchlist.length === 0) {
+      setWatchlistStatus("Add at least one wallet before running a protection radar scan.")
+      return
+    }
+    setIsWatchlistScanning(true)
+    setWatchlistStatus("")
+    for (const item of protectionWatchlist) {
+      await scanWatchlistWallet(item)
+    }
+    setIsWatchlistScanning(false)
+    setWatchlistStatus("Watchlist scan finished. Review any low-confidence or exposed wallets.")
+  }
+
   useEffect(() => {
     if (!window.ethereum?.on) return
 
@@ -431,7 +661,15 @@ export function SecurityConsole() {
       setConnectedAccount(account)
       if (account) setAddress(account)
     }
-    const handleChain = (nextChainId: string) => setChainId(String(Number.parseInt(nextChainId, 16)))
+    const handleChain = (nextChainId: string) => {
+      const parsedChainId = String(Number.parseInt(nextChainId, 16))
+      if (isSelectableChain(parsedChainId)) {
+        setChainId(parsedChainId)
+        setScanError("")
+      } else {
+        setScanError("Connected wallet switched to an unsupported chain. Choose Ethereum, BNB Smart Chain, Polygon, Arbitrum, or Base before scanning.")
+      }
+    }
 
     window.ethereum.on("accountsChanged", handleAccounts)
     window.ethereum.on("chainChanged", handleChain)
@@ -568,6 +806,7 @@ export function SecurityConsole() {
           <SectionHeading
             id="dashboard"
             eyebrow="Live Scanner"
+            showLabel
             title="Wallet Security Checkup"
             copy="Connect a wallet or paste an EVM address. WalletShield reads live RPC state, checks approval exposure, pulls threat intelligence, and explains what matters first."
           />
@@ -597,7 +836,7 @@ export function SecurityConsole() {
                     value={address}
                     onChange={(event) => setAddress(event.target.value)}
                     placeholder="0x wallet address"
-                    className="min-h-11 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground"
+                    className="min-h-11 min-w-0 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-foreground focus-visible:ring-2 focus-visible:ring-foreground"
                   />
                   <IconButton onClick={connectWallet} variant="ghost">
                     <Wallet size={15} />
@@ -609,7 +848,7 @@ export function SecurityConsole() {
                   <select
                     value={chainId}
                     onChange={(event) => setChainId(event.target.value)}
-                    className="min-h-11 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none focus:border-foreground"
+                    className="min-h-11 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none focus-visible:border-foreground focus-visible:ring-2 focus-visible:ring-foreground"
                   >
                     {selectableChains.map((chain) => (
                       <option key={chain.id} value={chain.id}>
@@ -655,7 +894,7 @@ export function SecurityConsole() {
                       <button
                         type="button"
                         onClick={() => {
-                          window.localStorage.removeItem("walletshield.scanHistory")
+                          saveScanHistory([])
                           setScanHistory([])
                         }}
                         className="text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
@@ -686,7 +925,7 @@ export function SecurityConsole() {
                 )}
 
                 {scanError && (
-                  <div className="border border-[#ff3333]/60 bg-[#ff3333]/10 px-4 py-3 font-mono text-xs text-[#ff3333]">
+                  <div className="border border-[var(--signal-critical)] bg-[var(--signal-critical-bg)] px-4 py-3 font-mono text-xs text-[var(--signal-critical)]">
                     {scanError}
                   </div>
                 )}
@@ -738,9 +977,9 @@ export function SecurityConsole() {
                     <div
                       className={`border p-3 ${
                         report.dataConfidence.label === "low"
-                          ? "border-[#ff3333]/60 bg-[#ff3333]/10"
+                          ? "border-[var(--signal-critical)] bg-[var(--signal-critical-bg)]"
                           : report.dataConfidence.label === "medium"
-                            ? "border-[#f6c65b]/50 bg-[#f6c65b]/10"
+                            ? "border-[var(--signal-medium)] bg-[var(--signal-medium-bg)]"
                             : "border-border"
                       }`}
                     >
@@ -1020,6 +1259,170 @@ export function SecurityConsole() {
         </div>
       </section>
 
+      <section id="radar" className={activeView === "radar" ? "border-b border-border" : "hidden"}>
+        <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
+          <SectionHeading
+            id="protection-radar"
+            eyebrow="Wave 3 Protection Radar"
+            showLabel
+            title="Proactive Wallet Watch"
+            copy="Track user-supplied wallets, rescan them through the live scanner, and combine wallet risk with SoSoValue macro and campaign context before users sign during volatile moments."
+          />
+
+          <div className="grid gap-8 lg:grid-cols-[0.95fr_1.05fr]">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="border border-border p-4">
+                  <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                    Data Confidence
+                  </div>
+                  <div className="mt-2 font-pixel-line text-3xl text-foreground">
+                    {report ? report.dataConfidence.label : "—"}
+                  </div>
+                  <p className="mt-2 font-mono text-xs leading-relaxed text-muted-foreground">
+                    {report
+                      ? `${report.dataConfidence.score}/100 source coverage`
+                      : "Run a scan to evaluate source coverage."}
+                  </p>
+                </div>
+                <div className="border border-border p-4">
+                  <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                    Campaign Matches
+                  </div>
+                  <div className="mt-2 font-pixel-line text-3xl text-foreground">
+                    {report ? report.threatCampaigns.length : "—"}
+                  </div>
+                  <p className="mt-2 font-mono text-xs leading-relaxed text-muted-foreground">
+                    SoSoValue scam-keyword matches tied to the current scan context.
+                  </p>
+                </div>
+                <div className="border border-border p-4">
+                  <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                    Macro Events
+                  </div>
+                  <div className="mt-2 font-pixel-line text-3xl text-foreground">
+                    {report ? report.macroEvents.length : "—"}
+                  </div>
+                  <p className="mt-2 font-mono text-xs leading-relaxed text-muted-foreground">
+                    SoSoValue macro calendar items that can raise phishing urgency risk.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 border-b border-border pb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  <Clock3 size={15} />
+                  Macro Risk Calendar
+                </div>
+                {report ? (
+                  report.macroEvents.length > 0 ? (
+                    report.macroEvents.map((event) => <MacroEventRow key={event.id} event={event} />)
+                  ) : (
+                    <EmptyState
+                      title="No macro events returned"
+                      copy="The current SoSoValue macro calendar call returned no events, or the source is unconfigured/rate limited."
+                    />
+                  )
+                ) : (
+                  <EmptyState title="Scan first" copy="Macro risk context loads with the wallet report." />
+                )}
+              </div>
+
+              {report?.dataConfidence.warnings.length ? (
+                <div className="space-y-2">
+                  <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                    Coverage Warnings
+                  </div>
+                  {report.dataConfidence.warnings.map((warning) => (
+                    <div key={warning} className="border border-[var(--signal-medium)] p-3 font-mono text-xs text-[var(--signal-medium)]">
+                      {warning}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="border border-border p-5">
+              <div className="flex flex-col gap-3 border-b border-border pb-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                    <Radar size={15} />
+                    Local Wallet Watchlist
+                  </div>
+                  <p className="mt-2 max-w-xl font-mono text-xs leading-relaxed text-muted-foreground">
+                    Add public wallet addresses from this browser. WalletShield does not create accounts, send alerts, or store private data server-side.
+                  </p>
+                </div>
+                <IconButton onClick={scanWatchlist} disabled={isWatchlistScanning || protectionWatchlist.length === 0}>
+                  {isWatchlistScanning ? <RefreshCw className="animate-spin" size={15} /> : <ShieldCheck size={15} />}
+                  Scan All
+                </IconButton>
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-[1fr_auto_auto]">
+                <input
+                  value={watchlistAddress}
+                  onChange={(event) => setWatchlistAddress(event.target.value)}
+                  placeholder="0x wallet to monitor"
+                  className="min-h-11 min-w-0 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-foreground focus-visible:ring-2 focus-visible:ring-foreground"
+                />
+                <select
+                  value={chainId}
+                  onChange={(event) => setChainId(event.target.value)}
+                  className="min-h-11 border border-border bg-background px-3 font-mono text-xs text-foreground outline-none transition-colors focus-visible:border-foreground focus-visible:ring-2 focus-visible:ring-foreground"
+                  aria-label="Watchlist chain"
+                >
+                  {selectableChains.map((chain) => (
+                    <option key={chain.id} value={chain.id}>
+                      {chain.name}
+                    </option>
+                  ))}
+                </select>
+                <IconButton onClick={addWatchlistWallet}>
+                  <Wallet size={15} />
+                  Add
+                </IconButton>
+              </div>
+
+              {watchlistStatus && (
+                <div className="mt-4 border border-border p-3 font-mono text-xs text-muted-foreground">
+                  {watchlistStatus}
+                </div>
+              )}
+
+              <div className="mt-5 space-y-3">
+                {protectionWatchlist.length > 0 ? (
+                  protectionWatchlist.map((item) => (
+                    <ProtectionWatchRow
+                      key={item.id}
+                      item={item}
+                      disabled={isWatchlistScanning}
+                      onScan={() => scanWatchlistWallet(item)}
+                      onRemove={() => removeWatchlistWallet(item.id)}
+                    />
+                  ))
+                ) : (
+                  <EmptyState
+                    title="No watched wallets"
+                    copy="Add a public address to build a browser-local protection list. No sample wallets are preloaded."
+                  />
+                )}
+              </div>
+
+              {protectionWatchlist.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearWatchlist}
+                  className="mt-5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+                >
+                  Clear local watchlist
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section id="token-probe" className={activeView === "token" ? "border-b border-border" : "hidden"}>
         <div className="mx-auto max-w-7xl px-4 py-16 lg:px-8 lg:py-24">
           <SectionHeading
@@ -1036,7 +1439,7 @@ export function SecurityConsole() {
                   value={tokenAddress}
                   onChange={(event) => setTokenAddress(event.target.value)}
                   placeholder="0x token contract"
-                  className="min-h-11 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground"
+                  className="min-h-11 min-w-0 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-foreground focus-visible:ring-2 focus-visible:ring-foreground"
                 />
                 <IconButton onClick={runTokenProbe} disabled={isTokenScanning}>
                   {isTokenScanning ? <RefreshCw className="animate-spin" size={15} /> : <Search size={15} />}
@@ -1044,7 +1447,7 @@ export function SecurityConsole() {
                 </IconButton>
               </div>
               {tokenError && (
-                <div className="mt-4 border border-[#ff3333]/60 bg-[#ff3333]/10 p-3 font-mono text-xs text-[#ff3333]">
+                <div className="mt-4 border border-[var(--signal-critical)] bg-[var(--signal-critical-bg)] p-3 font-mono text-xs text-[var(--signal-critical)]">
                   {tokenError}
                 </div>
               )}
@@ -1143,7 +1546,7 @@ export function SecurityConsole() {
                     value={question}
                     onChange={(event) => setQuestion(event.target.value)}
                     placeholder="Why is this risky?"
-                    className="min-h-11 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground"
+                    className="min-h-11 min-w-0 border border-border bg-background px-3 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-foreground focus-visible:ring-2 focus-visible:ring-foreground"
                   />
                   <IconButton type="submit" disabled={isAssistantLoading}>
                     <Zap size={15} />
@@ -1253,13 +1656,14 @@ export function SecurityConsole() {
             id="wave-roadmap"
             eyebrow="WaveHack Roadmap"
             title="From MVP To Security Network"
-            copy="Wave 1 proves the useful loop. Wave 2 hardens intelligence and revocation. Wave 3 turns WalletShield into proactive wallet protection."
+            copy="Wave 1 proves the useful loop. Wave 2 hardens intelligence and revocation. Wave 3 ships proactive web protection while larger browser and community surfaces stay clearly marked as future infrastructure."
           />
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {[
               ["Wave 1", "Live scan, wallet score, approvals, token probe, SoSoValue context, AI assistant."],
               ["Wave 2", "Score formula, SoSoValue campaign watch, SSI index context, SoDEX market data, local history, revoke simulation."],
-              ["Wave 3", "Browser extension, pre-sign warnings, reputation engine, community reports, notification channels."],
+              ["Wave 3", "Protection Radar, SoSoValue macro calendar, browser-local multi-wallet watchlist, source-confidence warnings."],
+              ["Future", "Browser extension, pre-sign warnings, community reports, notification channels, and developer API."],
             ].map(([title, copy]) => (
               <div key={title} className="border border-border p-5">
                 <div className="font-pixel-line text-3xl text-foreground">{title}</div>
@@ -1320,6 +1724,28 @@ function CampaignRow({ campaign }: { campaign: ThreatCampaign }) {
   )
 }
 
+function MacroEventRow({ event }: { event: MacroEvent }) {
+  return (
+    <div className="border border-border p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`border px-2 py-1 font-mono text-[10px] uppercase ${severityStyles[event.severity]}`}>
+              {event.severity}
+            </span>
+            <span className="font-mono text-sm text-foreground">{event.eventName}</span>
+          </div>
+          <p className="mt-3 font-mono text-xs leading-relaxed text-muted-foreground">{event.detail}</p>
+        </div>
+        <div className="font-mono text-xs text-muted-foreground md:text-right">
+          {formatDateString(event.date)}
+          <div className="mt-1 text-[10px] uppercase tracking-widest">{event.source}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ForensicsRow({ event }: { event: ForensicsEvent }) {
   return (
     <div className="border border-border p-4">
@@ -1344,6 +1770,71 @@ function ForensicsRow({ event }: { event: ForensicsEvent }) {
   )
 }
 
+function ProtectionWatchRow({
+  item,
+  disabled,
+  onScan,
+  onRemove,
+}: {
+  item: ProtectionWatchItem
+  disabled: boolean
+  onScan: () => void
+  onRemove: () => void
+}) {
+  const statusClass =
+    item.status === "ok"
+      ? "text-foreground"
+      : item.status === "error"
+      ? "text-[var(--signal-critical)]"
+      : item.status === "scanning"
+      ? "text-[var(--signal-medium)]"
+      : "text-muted-foreground"
+
+  return (
+    <div className="border border-border p-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`font-mono text-[10px] uppercase tracking-widest ${statusClass}`}>
+              {item.status}
+            </span>
+            <span className="break-all font-mono text-sm text-foreground">{shortAddress(item.address)}</span>
+            <span className="border border-border px-2 py-1 font-mono text-[10px] text-muted-foreground">
+              {item.chainName}
+            </span>
+          </div>
+          <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{item.address}</p>
+          {item.error && <p className="mt-3 font-mono text-xs text-[var(--signal-critical)]">{item.error}</p>}
+          {item.lastScannedAt && (
+            <p className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              Last scanned {new Date(item.lastScannedAt).toLocaleString()}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col gap-3 md:items-end">
+          <div className="font-mono text-xs text-muted-foreground md:text-right">
+            <div className="font-pixel-line text-3xl text-foreground">
+              {typeof item.latestScore === "number" ? item.latestScore : "—"}
+            </div>
+            <div>{item.latestLabel ?? "Not scanned"}</div>
+            {item.dataConfidenceLabel && <div>confidence: {item.dataConfidenceLabel}</div>}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <IconButton onClick={onScan} disabled={disabled || item.status === "scanning"} variant="ghost">
+              {item.status === "scanning" ? <RefreshCw className="animate-spin" size={14} /> : <Search size={14} />}
+              Scan
+            </IconButton>
+            <IconButton onClick={onRemove} disabled={disabled} variant="danger">
+              <Ban size={14} />
+              Remove
+            </IconButton>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function MarketRow({ signal }: { signal: MarketSignal }) {
   return (
     <div className="border border-border p-4">
@@ -1354,7 +1845,7 @@ function MarketRow({ signal }: { signal: MarketSignal }) {
         </div>
         <div className="font-mono text-xs text-muted-foreground md:text-right">
           <div>{signal.value}</div>
-          {signal.change && <div className={signal.severity === "medium" ? "text-[#f6c65b]" : ""}>{signal.change}</div>}
+          {signal.change && <div className={signal.severity === "medium" ? "text-[var(--signal-medium)]" : ""}>{signal.change}</div>}
         </div>
       </div>
       {signal.url && (

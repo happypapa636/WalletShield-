@@ -1,20 +1,11 @@
 import type { Metadata, Viewport } from "next"
-import { Geist_Mono, Silkscreen } from "next/font/google"
+import { GeistMono } from "geist/font/mono"
 import { GeistPixelLine } from "geist/font/pixel"
 import { Analytics } from "@vercel/analytics/next"
+import { MotionSafeProvider } from "@/components/motion-safe-provider"
 import "./globals.css"
 
-const geistMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-})
-
-const silkscreen = Silkscreen({
-  weight: ["400", "700"],
-  subsets: ["latin"],
-  variable: "--font-pixel",
-})
-
+const geistMono = GeistMono
 const geistPixelLine = GeistPixelLine
 
 export const metadata: Metadata = {
@@ -38,7 +29,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: "#000000",
+  themeColor: "oklch(0.13 0.01 265)",
   width: "device-width",
   initialScale: 1,
 }
@@ -52,11 +43,11 @@ export default function RootLayout({
 
   return (
     <html lang="en" className={`dark ${geistPixelLine.variable}`}>
-      <body
-        className={`${geistMono.variable} ${silkscreen.variable} font-mono antialiased`}
-      >
-        {children}
-        {analyticsEnabled && <Analytics />}
+      <body className={`${geistMono.variable} font-mono antialiased`}>
+        <MotionSafeProvider>
+          {children}
+          {analyticsEnabled && <Analytics />}
+        </MotionSafeProvider>
       </body>
     </html>
   )

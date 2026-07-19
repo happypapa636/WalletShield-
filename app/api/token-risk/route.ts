@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { isSupportedChainId, normalizeChainId, supportedChainNames } from "@/lib/walletshield/chains"
 import { apiJson, parseJsonBody, rateLimit } from "@/lib/walletshield/guards"
+import { logApiError } from "@/lib/walletshield/observability"
 import { fetchTokenRisk, isAddress } from "@/lib/walletshield/server"
 
 export const runtime = "nodejs"
@@ -14,7 +15,7 @@ const tokenRiskRequestSchema = z
 
 export async function POST(request: Request) {
   try {
-    const limited = rateLimit(request, "token-risk")
+    const limited = await rateLimit(request, "token-risk")
     if (limited) return limited
 
     const parsed = await parseJsonBody(request, tokenRiskRequestSchema, { maxBytes: 1_500 })
@@ -36,7 +37,8 @@ export async function POST(request: Request) {
 
     const report = await fetchTokenRisk(chainId, contractAddress)
     return apiJson(report)
-  } catch {
+  } catch (error) {
+    logApiError("token-risk", error)
     return apiJson(
       { error: "Token risk scan failed. Check the token address and chain, then try again." },
       { status: 500 },

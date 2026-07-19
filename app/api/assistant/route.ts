@@ -1,6 +1,13 @@
 import { z } from "zod"
 import { apiJson, parseJsonBody, rateLimit } from "@/lib/walletshield/guards"
-import { extractOpenAiText, getOpenAiModel, isAddress, shortAddress } from "@/lib/walletshield/server"
+import { logApiError } from "@/lib/walletshield/observability"
+import {
+  extractOpenAiText,
+  getOpenAiModel,
+  getOpenAiResponsesUrl,
+  isAddress,
+  shortAddress,
+} from "@/lib/walletshield/server"
 
 export const runtime = "nodejs"
 
@@ -120,7 +127,7 @@ function buildAssistantContext(report: unknown) {
 
 export async function POST(request: Request) {
   try {
-    const limited = rateLimit(request, "assistant")
+    const limited = await rateLimit(request, "assistant")
     if (limited) return limited
 
     const parsed = await parseJsonBody(request, assistantRequestSchema, { maxBytes: 16_000 })
@@ -144,7 +151,7 @@ export async function POST(request: Request) {
       })
     }
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    const response = await fetch(getOpenAiResponsesUrl(), {
       method: "POST",
       headers: {
         authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -172,11 +179,20 @@ ${JSON.stringify(reportContext).slice(0, 3000)}`,
     }
 
     const payload = await response.json()
+    const answer = extractOpenAiText(payload)
+    if (!answer) {
+      return apiJson({
+        answer: localAnswer(question),
+        source: "WalletShield local assistant",
+      })
+    }
+
     return apiJson({
-      answer: extractOpenAiText(payload) || localAnswer(question),
+      answer,
       source: "OpenAI Responses API",
     })
-  } catch {
+  } catch (error) {
+    logApiError("assistant", error)
     return apiJson(
       { error: "Assistant failed. Try again or use the recovery guidance in the scan report." },
       { status: 500 },

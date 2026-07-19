@@ -1,35 +1,16 @@
+/* Hallmark · pre-emit critique: P5 H4 E4 S5 R4 V4
+ * Hallmark · macrostructure: Workbench Dashboard · tone: technical · anchor hue: monochrome
+ */
+@import '../tokens.css';
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
 
-:root {
-  --background: #000000;
-  --foreground: #ffffff;
-  --card: #0a0a0a;
-  --card-foreground: #ffffff;
-  --popover: #0a0a0a;
-  --popover-foreground: #ffffff;
-  --primary: #ffffff;
-  --primary-foreground: #000000;
-  --secondary: #1a1a1a;
-  --secondary-foreground: #ffffff;
-  --muted: #1a1a1a;
-  --muted-foreground: #a0a0a0;
-  --accent: #1a1a1a;
-  --accent-foreground: #ffffff;
-  --destructive: #ff3333;
-  --destructive-foreground: #ffffff;
-  --border: #262626;
-  --input: #262626;
-  --ring: #ffffff;
-  --radius: 0rem;
-}
-
 @theme inline {
   --font-sans: 'Geist', 'Geist Fallback', system-ui, sans-serif;
-  --font-mono: 'Geist Mono', 'Geist Mono Fallback', monospace;
-  --font-pixel: 'Silkscreen', 'Geist Mono', monospace;
+  --font-mono: var(--font-geist-mono), 'Geist Mono', 'Geist Mono Fallback', ui-monospace, monospace;
+  --font-pixel: var(--font-geist-pixel-line), var(--font-geist-mono), 'Geist Mono', monospace;
   --font-pixel-line: var(--font-geist-pixel-line);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -57,6 +38,11 @@
 }
 
 @layer base {
+  html,
+  body {
+    overflow-x: clip;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
@@ -100,8 +86,8 @@
 }
 
 ::selection {
-  background: #ffffff;
-  color: #000000;
+  background: var(--foreground);
+  color: var(--background);
 }
 
 ::-webkit-scrollbar {
@@ -109,13 +95,13 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #000000;
+  background: var(--background);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333333;
+  background: var(--border);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555555;
+  background: var(--muted-foreground);
 }

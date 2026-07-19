@@ -71,7 +71,7 @@ function LayerStack() {
           animate={isInView ? { opacity: 1, x: 0 } : {}}
           transition={{ delay: 0.2 + i * 0.12, duration: 0.5 }}
           onClick={() => setExpanded(expanded === i ? null : i)}
-          className={`cursor-pointer border border-border ${layer.color} transition-all duration-300 ${
+          className={`cursor-pointer border border-border ${layer.color} transition-colors duration-300 ${
             expanded === i ? "py-8" : "py-4"
           }`}
           style={{

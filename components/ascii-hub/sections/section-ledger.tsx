@@ -34,7 +34,7 @@ function BlockCard({ block, index, isSelected, onSelect }: {
       viewport={{ once: true }}
       transition={{ delay: 0.15 + index * 0.1 }}
       onClick={onSelect}
-      className={`group relative flex w-48 flex-shrink-0 flex-col border p-4 text-left font-mono transition-all duration-300 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
+      className={`group relative flex w-48 flex-shrink-0 flex-col border p-4 text-left font-mono transition-colors duration-300 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
         isSelected
           ? "border-foreground bg-foreground text-background"
           : "border-border bg-background text-foreground hover:border-foreground"

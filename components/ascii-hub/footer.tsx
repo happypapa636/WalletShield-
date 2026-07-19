@@ -58,7 +58,7 @@ export function Footer() {
                 <a
                   key={link.name}
                   href={link.href}
-                  className="group flex items-center gap-3 py-2 font-mono text-sm text-muted-foreground transition-all duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+                  className="group flex items-center gap-3 py-2 font-mono text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
                 >
                   <link.icon size={14} />
                   <span>{link.name}</span>
@@ -95,7 +95,7 @@ export function Footer() {
 
             <button
               onClick={scrollToTop}
-              className="mt-8 flex items-center gap-2 self-start font-mono text-xs text-muted-foreground transition-all duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none lg:self-end"
+              className="mt-8 flex items-center gap-2 self-start font-mono text-xs text-muted-foreground transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none lg:self-end"
               aria-label="Back to top"
             >
               <ArrowUp size={12} />

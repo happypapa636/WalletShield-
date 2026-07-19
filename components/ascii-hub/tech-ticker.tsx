@@ -8,6 +8,8 @@ const TECH_ITEMS = [
   "GoPlus Security",
   "SoSoValue Campaign Radar",
   "SSI Index Context",
+  "Macro Risk Calendar",
+  "Wave 3 Protection Radar",
   "SoDEX Read-Only Context",
   "Score Formula",
   "OpenAI Explanations",
@@ -20,7 +22,7 @@ const TECH_ITEMS = [
   "Arbitrum",
   "Base",
   "Revoke Simulation",
-  "Wave 2 Platform",
+  "Wave 3 Platform",
   "Next.js 16",
 ]
 

@@ -6,6 +6,7 @@ import {
   supportedChainNames,
 } from "@/lib/walletshield/chains"
 import { apiJson, parseJsonBody, rateLimit } from "@/lib/walletshield/guards"
+import { logApiError } from "@/lib/walletshield/observability"
 import {
   clampScore,
   dataSource,
@@ -17,6 +18,7 @@ import {
   generateAiSummary,
   isAddress,
   localSummary,
+  parseRpcQuantity,
   rpcCall,
   scoreLabel,
   severityRank,
@@ -26,6 +28,7 @@ import type {
   ApprovalItem,
   DataConfidence,
   ForensicsEvent,
+  MacroEvent,
   MarketSignal,
   RiskItem,
   ScoreCategory,
@@ -101,6 +104,7 @@ function buildScores(input: {
   addressFlags: string[]
   approvals: ApprovalItem[]
   marketStress: number
+  macroStress: number
   dexSignals: MarketSignal[]
   approvalCoverageLimited: boolean
   rpcFailed: boolean
@@ -132,7 +136,9 @@ function buildScores(input: {
       (input.rpcFailed ? 20 : input.txCount === 0 ? 8 : 0) -
       (input.rpcFailed ? 0 : Math.min(input.txCount / 500, 10)),
   )
-  const marketContext = clampScore(92 - input.marketStress * 8 - (input.marketFeedFailed ? 12 : 0))
+  const marketContext = clampScore(
+    92 - input.marketStress * 8 - input.macroStress * 5 - (input.marketFeedFailed ? 12 : 0),
+  )
   const tradingSurface = clampScore(96 - dexStress * 14 - (input.sodexFeedFailed ? 8 : 0))
   const overall = clampScore(
     approvalSafety * 0.35 +
@@ -178,8 +184,8 @@ function buildScores(input: {
       note:
         input.marketFeedFailed
           ? "SoSoValue market feed failed"
-          : input.marketStress
-          ? "Market stress signal detected"
+          : input.marketStress || input.macroStress
+          ? "Market or macro stress signal detected"
           : "No major market stress signal",
     },
     {
@@ -254,6 +260,12 @@ function buildScores(input: {
       severity: "medium" as const,
       detail: `${input.marketStress} volatile market signal${input.marketStress === 1 ? "" : "s"} from SoSoValue market, news, or SSI feeds.`,
     },
+    input.macroStress > 0 && {
+      label: "Macro event window",
+      impact: input.macroStress * -5,
+      severity: "medium" as const,
+      detail: `${input.macroStress} SoSoValue macro calendar event${input.macroStress === 1 ? "" : "s"} near the scan window.`,
+    },
     input.marketFeedFailed && {
       label: "SoSoValue context unavailable",
       impact: -12,
@@ -298,7 +310,7 @@ function buildScores(input: {
     validationNotes: [
       "False positives are possible when a legitimate spender is not verified or uses unlimited allowance for convenience.",
       "False negatives are possible when a new drainer contract has not appeared in public feeds yet.",
-      "SoSoValue campaign search is context only unless it can be tied to wallet assets, approvals, or user activity.",
+      "SoSoValue campaign and macro context are not wallet-specific proof unless tied to wallet assets, approvals, or user activity.",
       "When a critical data source fails, WalletShield lowers score confidence instead of treating missing data as clean.",
     ],
   }
@@ -322,6 +334,7 @@ function buildForensicsTimeline(input: {
   approvals: ApprovalItem[]
   risks: RiskItem[]
   campaigns: ThreatCampaign[]
+  macroEvents: MacroEvent[]
   dexSignals: MarketSignal[]
   txCount: number
   rpcFailed: boolean
@@ -368,6 +381,17 @@ function buildForensicsTimeline(input: {
     })
   }
 
+  for (const event of input.macroEvents.filter((item) => severityRank(item.severity) >= severityRank("low")).slice(0, 3)) {
+    events.push({
+      id: `forensics-${event.id}`,
+      title: event.eventName,
+      severity: event.severity,
+      source: event.source,
+      detail: event.detail,
+      observedAt: event.date,
+    })
+  }
+
   for (const signal of input.dexSignals.filter((item) => severityRank(item.severity) >= severityRank("medium"))) {
     events.push({
       id: `forensics-${signal.id}`,
@@ -408,6 +432,7 @@ function buildDataConfidence(input: {
   addressFeedFailed: boolean
   approvalFeedFailed: boolean
   marketFeedFailed: boolean
+  marketFeedPartial: boolean
   sodexFeedFailed: boolean
   approvalCoverageLimited: boolean
 }): DataConfidence {
@@ -418,6 +443,7 @@ function buildDataConfidence(input: {
   if (input.approvalFeedFailed) warnings.push("Approval inventory could not be fully loaded.")
   if (input.approvalCoverageLimited) warnings.push("Approval coverage is partial for this chain.")
   if (input.marketFeedFailed) warnings.push("SoSoValue market and SSI context is unavailable.")
+  if (input.marketFeedPartial) warnings.push("SoSoValue market and SSI context is partially loaded.")
   if (input.sodexFeedFailed) warnings.push("SoDEX read-only context is unavailable.")
 
   const score = clampScore(
@@ -427,6 +453,7 @@ function buildDataConfidence(input: {
       (input.approvalFeedFailed ? 26 : 0) -
       (input.approvalCoverageLimited ? 10 : 0) -
       (input.marketFeedFailed ? 10 : 0) -
+      (input.marketFeedPartial ? 4 : 0) -
       (input.sodexFeedFailed ? 6 : 0),
   )
 
@@ -439,7 +466,7 @@ function buildDataConfidence(input: {
 
 export async function POST(request: Request) {
   try {
-    const limited = rateLimit(request, "scan")
+    const limited = await rateLimit(request, "scan")
     if (limited) return limited
 
     const parsed = await parseJsonBody(request, scanRequestSchema, { maxBytes: 2_000 })
@@ -477,28 +504,44 @@ export async function POST(request: Request) {
         fetchSodexSignals(address),
       ])
 
-    const nativeBalance =
-      balanceResult.status === "fulfilled" ? formatNativeBalance(balanceResult.value) : "0"
-    const txCount =
-      txCountResult.status === "fulfilled" ? Number.parseInt(txCountResult.value, 16) : 0
+    let nativeBalance = "0"
+    let txCount = 0
+    let rpcFormatFailed = false
+
+    try {
+      if (balanceResult.status === "fulfilled") {
+        nativeBalance = formatNativeBalance(balanceResult.value)
+      }
+      if (txCountResult.status === "fulfilled") {
+        txCount = parseRpcQuantity(txCountResult.value)
+      }
+    } catch {
+      rpcFormatFailed = true
+    }
     const addressFlags =
       addressResult.status === "fulfilled" ? addressResult.value.flags : []
     const approvals =
       approvalResult.status === "fulfilled" ? approvalResult.value.approvals : []
     const sosoSignals =
       marketResult.status === "fulfilled" ? marketResult.value.signals : []
+    const macroEvents =
+      marketResult.status === "fulfilled" ? marketResult.value.macroEvents : []
     const sodexSignals =
       sodexResult.status === "fulfilled" ? sodexResult.value.signals : []
     const threatCampaigns =
       marketResult.status === "fulfilled" ? marketResult.value.campaigns : []
     const approvalCoverageLimited =
       approvalResult.status === "fulfilled" && approvalResult.value.status === "unconfigured"
-    const rpcFailed = balanceResult.status !== "fulfilled" || txCountResult.status !== "fulfilled"
+    const rpcFailed =
+      balanceResult.status !== "fulfilled" || txCountResult.status !== "fulfilled" || rpcFormatFailed
     const addressFeedFailed = addressResult.status !== "fulfilled"
     const approvalFeedFailed =
       approvalResult.status !== "fulfilled" || approvalResult.value.status === "error"
     const marketFeedFailed =
-      marketResult.status !== "fulfilled" || marketResult.value.status === "error"
+      marketResult.status !== "fulfilled" ||
+      ["error", "rate_limited", "unconfigured"].includes(marketResult.value.status)
+    const marketFeedPartial =
+      marketResult.status === "fulfilled" && marketResult.value.status === "partial"
     const sodexFeedFailed =
       sodexResult.status !== "fulfilled" || sodexResult.value.status === "error"
     const dataConfidence = buildDataConfidence({
@@ -506,6 +549,7 @@ export async function POST(request: Request) {
       addressFeedFailed,
       approvalFeedFailed,
       marketFeedFailed,
+      marketFeedPartial,
       sodexFeedFailed,
       approvalCoverageLimited,
     })
@@ -578,11 +622,15 @@ export async function POST(request: Request) {
     const marketStress = sosoSignals.filter(
       (signal) => severityRank(signal.severity) >= severityRank("medium"),
     ).length
+    const macroStress = macroEvents.filter(
+      (event) => severityRank(event.severity) >= severityRank("medium"),
+    ).length
     const { overall, categories, scoreFormula } = buildScores({
       txCount,
       addressFlags,
       approvals,
       marketStress,
+      macroStress,
       dexSignals: sodexSignals,
       approvalCoverageLimited,
       rpcFailed,
@@ -603,6 +651,7 @@ export async function POST(request: Request) {
       approvals,
       risks,
       campaigns: threatCampaigns,
+      macroEvents,
       dexSignals: sodexSignals,
       txCount,
       rpcFailed,
@@ -677,6 +726,7 @@ export async function POST(request: Request) {
       approvals,
       marketSignals: sosoSignals,
       threatCampaigns,
+      macroEvents,
       dexSignals: sodexSignals,
       forensics,
       recoveryPlan: buildRecoveryPlan(risks, approvals),
@@ -684,7 +734,8 @@ export async function POST(request: Request) {
       dataSources,
       dataConfidence,
     })
-  } catch {
+  } catch (error) {
+    logApiError("scan", error)
     return apiJson(
       { error: "Wallet scan failed. Check the address, chain, and provider configuration, then try again." },
       { status: 500 },

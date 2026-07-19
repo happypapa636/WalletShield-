@@ -2,59 +2,35 @@ import type {
   ApprovalItem,
   ChainConfig,
   DataSourceStatus,
+  MacroEvent,
   MarketSignal,
   RiskItem,
   Severity,
   ThreatCampaign,
   TokenRiskReport,
 } from "./types"
+import {
+  DEFAULT_OPENAI_MODEL,
+  GOPLUS_BASE_URL,
+  OPENAI_BASE_URL,
+  SODEX_PERPS_ENDPOINT,
+  SODEX_SPOT_ENDPOINT,
+  SOSO_BASE_URL,
+  SOSO_INDEX_TICKERS,
+  SOSO_MAX_CALLS_PER_MINUTE,
+  SOSO_TIMEOUT_MS,
+  getCampaignQueries,
+  getRpcEndpoint,
+} from "./config"
+import { consumeQuota } from "./shared-rate-limit"
 
-function envOrDefault(name: string, fallback: string) {
-  const value = process.env[name]?.trim()
-  return value || fallback
-}
-
-const GOPLUS_BASE = "https://api.gopluslabs.io/api"
-const SOSO_BASE = envOrDefault("SOSOVALUE_BASE_URL", "https://openapi.sosovalue.com/openapi/v1")
-const SODEX_REST_BASE = envOrDefault("SODEX_REST_BASE_URL", "https://mainnet-gw.sodex.dev/api/v1").replace(/\/$/, "")
-const SODEX_SPOT_ENDPOINT = envOrDefault("SODEX_SPOT_ENDPOINT", `${SODEX_REST_BASE}/spot`)
-const SODEX_PERPS_ENDPOINT = envOrDefault("SODEX_PERPS_ENDPOINT", `${SODEX_REST_BASE}/perps`)
-const DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-
-const FALLBACK_SOSO_INDEX_TICKERS = ["ssimag7", "ssimeme", "ssidefi", "ussi"]
+const SOSO_SUPPORTED_LANGUAGES = new Set(["en", "zh", "tc", "ja", "vi", "es", "pt", "ru", "tr", "fr"])
 const SOSO_INDEX_METADATA: Record<string, { label: string; context: string }> = {
   ssimag7: { label: "MAG7.ssi", context: "large-cap crypto beta" },
   ssimeme: { label: "MEME.ssi", context: "meme-sector risk pulse" },
   ssidefi: { label: "DEFI.ssi", context: "DeFi-sector risk pulse" },
   ussi: { label: "USSI", context: "delta-neutral index stability" },
 }
-
-const CAMPAIGN_QUERIES = [
-  {
-    slug: "wallet-drainer",
-    keyword: "wallet drainer",
-    title: "Wallet-drainer narrative",
-    severity: "high" as Severity,
-  },
-  {
-    slug: "phishing",
-    keyword: "phishing",
-    title: "Phishing link campaign",
-    severity: "high" as Severity,
-  },
-  {
-    slug: "fake-airdrop",
-    keyword: "fake airdrop",
-    title: "Fake airdrop campaign",
-    severity: "medium" as Severity,
-  },
-  {
-    slug: "honeypot",
-    keyword: "honeypot",
-    title: "Honeypot token campaign",
-    severity: "medium" as Severity,
-  },
-]
 
 export function isAddress(value: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value)
@@ -85,7 +61,7 @@ export async function rpcCall<T>(
   method: string,
   params: unknown[],
 ) {
-  const rpcUrl = process.env[chain.rpcEnv] || chain.fallbackRpc
+  const rpcUrl = getRpcEndpoint(chain).url
   const response = await fetch(rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -108,12 +84,18 @@ export async function rpcCall<T>(
 
 export function formatNativeBalance(hexValue?: string) {
   if (!hexValue) return "0"
+  if (!/^0x[0-9a-fA-F]+$/.test(hexValue)) throw new Error("Invalid RPC quantity.")
   const wei = BigInt(hexValue)
   const divisor = BigInt("1000000000000000000")
   const whole = wei / divisor
   const fraction = wei % divisor
   const fractionText = fraction.toString().padStart(18, "0").slice(0, 4)
   return `${whole.toString()}.${fractionText}`.replace(/\.?0+$/, "")
+}
+
+export function parseRpcQuantity(hexValue?: string) {
+  if (!hexValue || !/^0x[0-9a-fA-F]+$/.test(hexValue)) throw new Error("Invalid RPC quantity.")
+  return Number.parseInt(hexValue, 16)
 }
 
 async function getJson(url: string, headers?: HeadersInit) {
@@ -130,6 +112,15 @@ async function getJson(url: string, headers?: HeadersInit) {
 
 export function getOpenAiModel() {
   return process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL
+}
+
+export function getOpenAiResponsesUrl() {
+  return `${OPENAI_BASE_URL}/responses`
+}
+
+function getSosoLanguage() {
+  const language = process.env.SOSOVALUE_NEWS_LANGUAGE?.trim().toLowerCase() || "en"
+  return SOSO_SUPPORTED_LANGUAGES.has(language) ? language : "en"
 }
 
 function boolish(value: unknown) {
@@ -233,9 +224,9 @@ export async function fetchApprovals(chainId: string, address: string) {
   if (!chainId) return { approvals: [], status: "error" as const, detail: "Missing chain id" }
 
   const endpoints: Array<[ApprovalItem["type"], string]> = [
-    ["erc20", `${GOPLUS_BASE}/v2/token_approval_security/${chainId}?addresses=${address}`],
-    ["erc721", `${GOPLUS_BASE}/v2/nft721_approval_security/${chainId}?addresses=${address}`],
-    ["erc1155", `${GOPLUS_BASE}/v2/nft1155_approval_security/${chainId}?addresses=${address}`],
+    ["erc20", `${GOPLUS_BASE_URL}/v2/token_approval_security/${chainId}?addresses=${address}`],
+    ["erc721", `${GOPLUS_BASE_URL}/v2/nft721_approval_security/${chainId}?addresses=${address}`],
+    ["erc1155", `${GOPLUS_BASE_URL}/v2/nft1155_approval_security/${chainId}?addresses=${address}`],
   ]
 
   const settled = await Promise.allSettled(
@@ -278,7 +269,7 @@ const ADDRESS_FLAGS: Record<string, string> = {
 
 export async function fetchAddressSecurity(chainId: string, address: string) {
   const payload = await getJson(
-    `${GOPLUS_BASE}/v1/address_security/${address}?chain_id=${chainId}`,
+    `${GOPLUS_BASE_URL}/v1/address_security/${address}?chain_id=${chainId}`,
   )
   const result = payload.result ?? {}
   const flags = Object.entries(ADDRESS_FLAGS)
@@ -342,35 +333,121 @@ function newsUrl(item: Record<string, any>) {
   return item.original_link || item.source_link
 }
 
-async function sosoFetch(path: string) {
-  const key = process.env.SOSOVALUE_API_KEY
-  if (!key) throw new Error("SOSOVALUE_API_KEY is not configured")
-  const payload = await getJson(`${SOSO_BASE}${path}`, {
-    "x-soso-api-key": key,
-  })
+class SosoApiError extends Error {
+  constructor(
+    public kind: "unconfigured" | "rate_limited" | "error",
+    message: string,
+    public retryAfterSeconds?: number,
+  ) {
+    super(message)
+  }
+}
 
-  if ("code" in payload && payload.code !== 0 && payload.code !== "0") {
-    throw new Error(payload.message ?? "SoSoValue API request failed")
+function isSosoApiError(error: unknown): error is SosoApiError {
+  return error instanceof SosoApiError
+}
+
+const sosoCache = new Map<string, { expiresAt: number; data: unknown }>()
+
+async function consumeSosoBudget() {
+  const quota = await consumeQuota("sosovalue:api-key", SOSO_MAX_CALLS_PER_MINUTE, 60_000)
+  if (quota.limited) {
+    throw new SosoApiError(
+      "rate_limited",
+      `SoSoValue local quota guard reached ${SOSO_MAX_CALLS_PER_MINUTE} requests/minute.`,
+      quota.retryAfterSeconds,
+    )
+  }
+}
+
+function readRetryAfter(response: Response, payload?: any) {
+  const retryHeader = Number(response.headers.get("retry-after"))
+  if (Number.isFinite(retryHeader) && retryHeader > 0) return retryHeader
+  const retryDetail = Number(payload?.details?.retry_after)
+  return Number.isFinite(retryDetail) && retryDetail > 0 ? retryDetail : undefined
+}
+
+function noteSosoRateHeaders(response: Response) {
+  const remaining = Number(response.headers.get("x-ratelimit-remaining"))
+  if (Number.isFinite(remaining) && remaining <= 0) return
+}
+
+async function sosoFetch<T = unknown>(path: string, options: { cacheTtlMs?: number } = {}) {
+  const key = process.env.SOSOVALUE_API_KEY
+  if (!key) throw new SosoApiError("unconfigured", "SOSOVALUE_API_KEY is not configured")
+
+  const url = `${SOSO_BASE_URL}${path}`
+  const cached = sosoCache.get(url)
+  if (cached && cached.expiresAt > Date.now()) return cached.data as T
+
+  await consumeSosoBudget()
+
+  const response = await fetch(url, {
+    headers: {
+      "x-soso-api-key": key,
+      accept: "application/json",
+    },
+    cache: "no-store",
+    signal: AbortSignal.timeout(SOSO_TIMEOUT_MS),
+  })
+  noteSosoRateHeaders(response)
+
+  let payload: any
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
   }
 
-  return "data" in payload ? payload.data : payload
+  if (response.status === 429) {
+    throw new SosoApiError(
+      "rate_limited",
+      "SoSoValue rate limit exceeded.",
+      readRetryAfter(response, payload),
+    )
+  }
+
+  if (!response.ok) {
+    throw new SosoApiError("error", `SoSoValue request failed with ${response.status}`)
+  }
+
+  if (payload && "code" in payload && payload.code !== 0 && payload.code !== "0") {
+    const code = Number(payload.code)
+    if (code === 429 || code === 42901) {
+      throw new SosoApiError(
+        "rate_limited",
+        "SoSoValue rate limit exceeded.",
+        readRetryAfter(response, payload),
+      )
+    }
+    throw new SosoApiError("error", payload.message ?? "SoSoValue API request failed")
+  }
+
+  const data = payload && "data" in payload ? payload.data : payload
+  if (options.cacheTtlMs && options.cacheTtlMs > 0) {
+    sosoCache.set(url, { expiresAt: Date.now() + options.cacheTtlMs, data })
+  }
+  return data as T
 }
 
 type MarketSignalResult = {
   signals: MarketSignal[]
   campaigns: ThreatCampaign[]
-  status: "live" | "fallback" | "unconfigured" | "error"
+  macroEvents: MacroEvent[]
+  status: DataSourceStatus["status"]
   detail: string
 }
 
 let marketSignalCache: { expiresAt: number; result: MarketSignalResult } | null = null
 
 async function fetchSosoCampaigns() {
+  const queries = getCampaignQueries()
   const settled = await Promise.allSettled(
-    CAMPAIGN_QUERIES.map(async (query) => {
+    queries.map(async (query) => {
       const result = await sosoFetch(
         `/news/search?keyword=${encodeURIComponent(query.keyword)}&page=1&page_size=3`,
-      )
+        { cacheTtlMs: 5 * 60_000 },
+      ) as Record<string, any>
       const list = asList(result)
       if (list.length === 0) return null
 
@@ -395,22 +472,27 @@ async function fetchSosoCampaigns() {
       campaigns.push(item.value)
     }
   }
-  return campaigns
+  return {
+    campaigns,
+    failed: settled.filter((item) => item.status === "rejected").length,
+    total: queries.length,
+  }
 }
 
 async function fetchSosoIndexTargets() {
+  const configured = SOSO_INDEX_TICKERS.map((ticker) => ticker.toLowerCase())
   try {
-    const available = asList(await sosoFetch("/indices"))
+    const available = asList(await sosoFetch("/indices", { cacheTtlMs: 60_000 }))
       .map((ticker: unknown) => String(ticker).toLowerCase())
       .filter(Boolean)
-    const preferred = FALLBACK_SOSO_INDEX_TICKERS.filter((ticker) => available.includes(ticker))
+    const preferred = configured.filter((ticker) => available.includes(ticker))
     const remaining = available.filter((ticker: string) => !preferred.includes(ticker))
-    const selected = [...preferred, ...remaining].slice(0, 4)
+    const selected = [...preferred, ...remaining].slice(0, 2)
     if (selected.length > 0) return selected.map(indexTarget)
-  } catch {
-    // Fall back to the known WaveHack demo set if the list endpoint is unavailable.
+  } catch (error) {
+    if (isSosoApiError(error) && error.kind === "rate_limited") throw error
   }
-  return FALLBACK_SOSO_INDEX_TICKERS.map(indexTarget)
+  return configured.slice(0, 2).map(indexTarget)
 }
 
 function indexTarget(ticker: string) {
@@ -420,6 +502,56 @@ function indexTarget(ticker: string) {
     label: meta?.label ?? `${ticker.toUpperCase()}.ssi`,
     context: meta?.context ?? "SoSoValue index risk pulse",
   }
+}
+
+function macroSeverity(date: string): Severity {
+  const now = new Date()
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const targetDate = new Date(`${date}T00:00:00Z`)
+  const target = targetDate.getTime()
+  if (!Number.isFinite(target)) return "info"
+  const daysAway = Math.round((target - today) / 86_400_000)
+  if (daysAway < 0) return "info"
+  if (daysAway <= 1) return "medium"
+  if (daysAway <= 7) return "low"
+  return "info"
+}
+
+function macroDetail(date: string, eventName: string) {
+  const severity = macroSeverity(date)
+  if (severity === "medium") {
+    return `${eventName} is scheduled near this scan window. Macro releases can increase volatility, urgency scams, fake liquidation messages, and panic-signing attempts.`
+  }
+  if (severity === "low") {
+    return `${eventName} is scheduled this week. Keep signing decisions separated from market volatility and news-driven urgency.`
+  }
+  return `${eventName} is listed on the SoSoValue macro calendar. Use it as context, not wallet-specific evidence.`
+}
+
+async function fetchSosoMacroEvents() {
+  const eventsByDate = asList(await sosoFetch("/macro/events", { cacheTtlMs: 60 * 60_000 })) as Array<{
+    date?: string
+    events?: unknown[]
+  }>
+
+  return eventsByDate
+    .flatMap((item) => {
+      const date = typeof item.date === "string" ? item.date : ""
+      if (!date) return []
+      return asList(item.events)
+        .map((eventName: unknown) => String(eventName).trim())
+        .filter(Boolean)
+        .map((eventName: string) => ({
+          id: `macro-${date}-${eventName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+          date,
+          eventName,
+          severity: macroSeverity(date),
+          source: "SoSoValue Macro Calendar",
+          detail: macroDetail(date, eventName),
+        }) satisfies MacroEvent)
+    })
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 8)
 }
 
 export async function fetchMarketSignals() {
@@ -436,6 +568,7 @@ export async function fetchMarketSignals() {
         },
       ],
       campaigns: [],
+      macroEvents: [],
       status: "unconfigured" as const,
       detail: "SOSOVALUE_API_KEY not present in the server environment.",
     }
@@ -450,7 +583,7 @@ export async function fetchMarketSignals() {
 
   try {
     const signals: MarketSignal[] = []
-    const currencies = (await sosoFetch("/currencies")) as Array<{
+    const currencies = (await sosoFetch("/currencies", { cacheTtlMs: 5 * 60_000 })) as Array<{
       currency_id: string
       symbol: string
       name: string
@@ -464,24 +597,35 @@ export async function fetchMarketSignals() {
 
     const indexTargets = await fetchSosoIndexTargets()
 
-    const [snapshots, newsResult, indexResults, campaignResults] = await Promise.all([
+    const language = getSosoLanguage()
+    const [snapshots, newsResult, indexResults, campaignResult, macroResult] = await Promise.all([
       Promise.allSettled(
         matched.map(async (currency) => {
-          const snapshot = await sosoFetch(`/currencies/${currency.currency_id}/market-snapshot`)
+          const snapshot = await sosoFetch(`/currencies/${currency.currency_id}/market-snapshot`, {
+            cacheTtlMs: 30_000,
+          })
           return { currency, snapshot: snapshot as Record<string, any> }
         }),
       ),
-      sosoFetch("/news?language=en&page=1&page_size=3").then(
+      sosoFetch(`/news?language=${encodeURIComponent(language)}&page=1&page_size=3`, {
+        cacheTtlMs: 60_000,
+      }).then(
         (news) => ({ status: "fulfilled" as const, news }),
         (error) => ({ status: "rejected" as const, error }),
       ),
       Promise.allSettled(
         indexTargets.map(async (index) => {
-          const snapshot = await sosoFetch(`/indices/${index.ticker}/market-snapshot`)
+          const snapshot = await sosoFetch(`/indices/${index.ticker}/market-snapshot`, {
+            cacheTtlMs: 30_000,
+          })
           return { index, snapshot: snapshot as Record<string, any> }
         }),
       ),
       fetchSosoCampaigns(),
+      fetchSosoMacroEvents().then(
+        (macroEvents) => ({ status: "fulfilled" as const, macroEvents }),
+        (error) => ({ status: "rejected" as const, error }),
+      ),
     ])
 
     for (const item of snapshots) {
@@ -534,7 +678,17 @@ export async function fetchMarketSignals() {
       })
     }
 
-    const campaigns = campaignResults
+    const campaigns = campaignResult.campaigns
+    const macroEvents = macroResult.status === "fulfilled" ? macroResult.macroEvents : []
+    const partialDetails: string[] = []
+
+    const snapshotFailures = snapshots.filter((item) => item.status === "rejected").length
+    const indexFailures = indexResults.filter((item) => item.status === "rejected").length
+    if (snapshotFailures > 0) partialDetails.push(`${snapshotFailures} currency snapshot request${snapshotFailures === 1 ? "" : "s"} failed`)
+    if (newsResult.status === "rejected") partialDetails.push("news feed failed")
+    if (indexFailures > 0) partialDetails.push(`${indexFailures} SSI index snapshot request${indexFailures === 1 ? "" : "s"} failed`)
+    if (campaignResult.failed > 0) partialDetails.push(`${campaignResult.failed}/${campaignResult.total} campaign search request${campaignResult.failed === 1 ? "" : "s"} failed`)
+    if (macroResult.status === "rejected") partialDetails.push("macro calendar failed")
 
     if (signals.length === 0) {
       throw new Error("SoSoValue returned no usable market or news signals.")
@@ -543,27 +697,34 @@ export async function fetchMarketSignals() {
     const result = {
       signals,
       campaigns,
-      status: "live" as const,
-      detail: "BTC/ETH snapshots, SSI index snapshots, news, and scam-campaign searches loaded from SoSoValue.",
+      macroEvents,
+      status: partialDetails.length > 0 ? ("partial" as const) : ("live" as const),
+      detail:
+        partialDetails.length > 0
+          ? `SoSoValue returned usable intelligence with partial coverage: ${partialDetails.join("; ")}.`
+          : "BTC/ETH snapshots, SSI index snapshots, news, macro calendar, and scam-campaign searches loaded from SoSoValue.",
     }
     marketSignalCache = { expiresAt: Date.now() + 60_000, result }
     return result
-  } catch {
-    const fallbackDetail =
-      "The SoSoValue API request failed, so WalletShield continued with wallet and security feeds."
+  } catch (error) {
+    const rateLimited = isSosoApiError(error) && error.kind === "rate_limited"
+    const fallbackDetail = rateLimited
+      ? `SoSoValue rate limit reached. WalletShield continued with wallet and security feeds${error.retryAfterSeconds ? `; retry after about ${error.retryAfterSeconds}s` : ""}.`
+      : "The SoSoValue API request failed, so WalletShield continued with wallet and security feeds."
     return {
       signals: [
         {
-          id: "soso-error",
-          title: "SoSoValue intelligence temporarily unavailable",
-          value: "Retry later",
+          id: rateLimited ? "soso-rate-limited" : "soso-error",
+          title: rateLimited ? "SoSoValue rate limit reached" : "SoSoValue intelligence temporarily unavailable",
+          value: rateLimited ? "Quota guard" : "Retry later",
           severity: "info" as Severity,
           source: "SoSoValue",
           detail: fallbackDetail,
         },
       ],
       campaigns: [],
-      status: "error" as const,
+      macroEvents: [],
+      status: rateLimited ? ("rate_limited" as const) : ("error" as const),
       detail: fallbackDetail,
     }
   }
@@ -748,7 +909,7 @@ export async function generateAiSummary(input: {
   if (!key) return null
 
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    const response = await fetch(getOpenAiResponsesUrl(), {
       method: "POST",
       headers: {
         authorization: `Bearer ${key}`,
@@ -825,7 +986,7 @@ export function localSummary(score: number, risks: RiskItem[], approvals: Approv
 
 export async function fetchTokenRisk(chainId: string, contractAddress: string): Promise<TokenRiskReport> {
   const payload = await getJson(
-    `${GOPLUS_BASE}/v1/token_security/${chainId}?contract_addresses=${contractAddress}`,
+    `${GOPLUS_BASE_URL}/v1/token_security/${chainId}?contract_addresses=${contractAddress}`,
   )
   const result = payload.result?.[contractAddress.toLowerCase()] ?? payload.result?.[contractAddress]
   if (!result) throw new Error("Token was not found by GoPlus")

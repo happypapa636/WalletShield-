@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "installCommand": "corepack pnpm install --frozen-lockfile",
+  "buildCommand": "corepack pnpm build",
+  "functions": {
+    "app/api/scan/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/token-risk/route.ts": {
+      "maxDuration": 15
+    },
+    "app/api/assistant/route.ts": {
+      "maxDuration": 15
+    }
+  }
+}

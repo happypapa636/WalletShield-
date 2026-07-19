@@ -54,7 +54,7 @@ export function Navigation() {
 
   return (
     <header
-      className={`sticky top-0 z-50 transition-all duration-300 ${
+      className={`sticky top-0 z-50 transition-colors duration-300 ${
         scrolled
           ? "bg-background/80 backdrop-blur-md border-b border-border"
           : "bg-transparent"
@@ -63,7 +63,7 @@ export function Navigation() {
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 lg:px-8">
         <button
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-          className="flex items-center gap-2 font-mono text-sm text-foreground transition-all duration-200 hover:opacity-70 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
+          className="flex items-center gap-2 font-mono text-sm text-foreground transition-opacity duration-200 hover:opacity-70 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none"
           aria-label="Scroll to top"
         >
           <span className="text-muted-foreground">{">"}</span>
@@ -76,7 +76,7 @@ export function Navigation() {
             <button
               key={link.id}
               onClick={() => scrollToSection(link.id)}
-              className={`px-3 py-1.5 font-mono text-xs transition-all duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
+              className={`px-3 py-1.5 font-mono text-xs transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
                 activeSection === link.id
                   ? "bg-foreground text-background"
                   : "text-muted-foreground hover:bg-foreground hover:text-background"
@@ -91,7 +91,7 @@ export function Navigation() {
         {/* Mobile Menu Toggle */}
         <button
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-          className="p-2 font-mono text-foreground transition-all duration-200 hover:bg-foreground hover:text-background focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none lg:hidden"
+          className="p-2 font-mono text-foreground transition-colors duration-200 hover:bg-foreground hover:text-background focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none lg:hidden"
           aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
           aria-expanded={isMobileMenuOpen}
         >
@@ -113,7 +113,7 @@ export function Navigation() {
                 <button
                   key={link.id}
                   onClick={() => scrollToSection(link.id)}
-                  className={`px-3 py-2 text-left font-mono text-sm transition-all duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
+                  className={`px-3 py-2 text-left font-mono text-sm transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
                     activeSection === link.id
                       ? "bg-foreground text-background"
                       : "text-muted-foreground hover:bg-foreground hover:text-background"

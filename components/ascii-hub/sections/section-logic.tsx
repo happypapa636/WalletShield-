@@ -41,7 +41,7 @@ function InteractiveTruthTable() {
           <button
             key={key}
             onClick={() => toggle(key)}
-            className={`flex flex-col items-center gap-2 border p-3 font-mono transition-all duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
+            className={`flex flex-col items-center gap-2 border p-3 font-mono transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:outline-none ${
               inputs[key]
                 ? "border-foreground bg-foreground text-background"
                 : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"

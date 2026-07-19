@@ -1,0 +1,29 @@
+/* Hallmark tokens · WalletShield production system */
+:root {
+  --background: oklch(0.13 0.01 265);
+  --foreground: oklch(0.97 0.01 265);
+  --card: oklch(0.17 0.01 265);
+  --card-foreground: oklch(0.97 0.01 265);
+  --popover: oklch(0.17 0.01 265);
+  --popover-foreground: oklch(0.97 0.01 265);
+  --primary: oklch(0.97 0.01 265);
+  --primary-foreground: oklch(0.13 0.01 265);
+  --secondary: oklch(0.23 0.01 265);
+  --secondary-foreground: oklch(0.97 0.01 265);
+  --muted: oklch(0.23 0.01 265);
+  --muted-foreground: oklch(0.72 0.01 265);
+  --accent: oklch(0.23 0.01 265);
+  --accent-foreground: oklch(0.97 0.01 265);
+  --destructive: oklch(0.67 0.23 28);
+  --destructive-foreground: oklch(0.98 0.01 28);
+  --border: oklch(0.3 0.01 265);
+  --input: oklch(0.3 0.01 265);
+  --ring: oklch(0.9 0.01 265);
+  --signal-critical: oklch(0.67 0.23 28);
+  --signal-critical-bg: oklch(0.3 0.08 28);
+  --signal-high: oklch(0.73 0.19 42);
+  --signal-high-bg: oklch(0.31 0.07 42);
+  --signal-medium: oklch(0.82 0.15 84);
+  --signal-medium-bg: oklch(0.32 0.06 84);
+  --radius: 0rem;
+}

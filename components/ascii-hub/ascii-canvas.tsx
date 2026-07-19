@@ -13,7 +13,7 @@ export function AsciiCanvas({ art, label }: AsciiCanvasProps) {
 
   return (
     <motion.div
-      className="relative overflow-hidden border border-border bg-secondary/30 p-4 transition-all duration-200"
+      className="relative overflow-hidden border border-border bg-secondary/30 p-4 transition-colors duration-200"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       whileTap={{ scale: 0.98 }}

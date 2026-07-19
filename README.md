@@ -33,8 +33,10 @@ The app never asks for seed phrases or private keys.
 - **AI Threat Explanation:** uses OpenAI to translate security findings into plain English.
 - **Recovery Center:** gives a step-by-step incident plan for suspicious approvals, drains, and exposed wallets.
 - **Threat Intelligence:** uses SoSoValue BTC/ETH snapshots, SSI index snapshots, live news, and scam-campaign searches to explain broader risk conditions.
+- **Wave 3 Protection Radar:** adds SoSoValue macro calendar context, source-confidence warnings, and a browser-local multi-wallet watchlist that rescans user-supplied addresses through the real scan API.
 - **SoDEX Context:** reads public SoDEX spot/perps market data and account API-key surface without asking for trading private keys or placing orders.
 - **Live Watch And History:** allows repeat scans during a session and stores recent scan history locally in the browser.
+- **China-Ready Runtime Configuration:** uses local packaged fonts, configurable OpenAI/SoSoValue/RPC endpoints, and configurable SoSoValue news language instead of relying on Google-hosted assets.
 
 ## How It Works
 
@@ -42,11 +44,11 @@ The app never asks for seed phrases or private keys.
 2. The frontend sends the address and chain ID to `POST /api/scan`.
 3. The backend reads native balance and transaction count through JSON-RPC.
 4. GoPlus Security APIs check address reputation and token/NFT approvals.
-5. SoSoValue APIs provide BTC/ETH market context, SSI index context, live news, and scam-campaign searches when `SOSOVALUE_API_KEY` is configured.
+5. SoSoValue APIs provide BTC/ETH market context, SSI index context, macro calendar context, live news, and scam-campaign searches when `SOSOVALUE_API_KEY` is configured.
 6. SoDEX public REST APIs provide read-only spot/perps execution context and scanned-wallet API-key surface checks.
-7. WalletShield scores the wallet and returns the exact weighted formula, deductions, and validation notes.
+7. WalletShield scores the wallet and returns the exact weighted formula, macro/market deductions, data-confidence warnings, and validation notes.
 8. OpenAI Responses API generates a concise plain-English explanation when `OPENAI_API_KEY` is configured. The assistant receives a redacted scan digest, not the full raw report.
-9. The UI shows the score, formula, top risks, approvals, simulated revoke actions, SoSoValue signals, SoDEX signals, token probe, assistant, history, forensics timeline, and recovery steps.
+9. The UI shows the score, formula, top risks, approvals, simulated revoke actions, SoSoValue signals, macro events, SoDEX signals, Wave 3 radar/watchlist, token probe, assistant, history, forensics timeline, and recovery steps.
 
 ## Supported Chains
 
@@ -68,6 +70,7 @@ Approval scanning currently uses GoPlus-supported EVM chains, including Base. Wh
 - GoPlus Security APIs
 - SoSoValue OpenAPI
 - SoSoValue Indexes (SSI)
+- SoSoValue Macro Calendar
 - SoDEX public REST APIs
 - OpenAI Responses API
 - Browser EIP-1193 wallet provider
@@ -86,7 +89,7 @@ Scans a wallet and returns:
 - transaction count
 - risky approvals
 - address reputation flags
-- SoSoValue market/news/SSI/campaign signals
+- SoSoValue market/news/SSI/campaign/macro signals
 - SoDEX read-only market and account-key signals
 - wallet-drain forensics timeline
 - AI or local explanation
@@ -115,6 +118,7 @@ Create `.env.local` from `.env.example`:
 SOSOVALUE_API_KEY=
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
 NEXT_PUBLIC_ENABLE_ANALYTICS=false
 
 ETHEREUM_RPC_URL=
@@ -123,13 +127,42 @@ POLYGON_RPC_URL=
 ARBITRUM_RPC_URL=
 BASE_RPC_URL=
 
+ALLOW_PUBLIC_RPC_FALLBACKS=false
+ETHEREUM_PUBLIC_RPC_FALLBACK_URL=
+BSC_PUBLIC_RPC_FALLBACK_URL=
+POLYGON_PUBLIC_RPC_FALLBACK_URL=
+ARBITRUM_PUBLIC_RPC_FALLBACK_URL=
+BASE_PUBLIC_RPC_FALLBACK_URL=
+
+GOPLUS_BASE_URL=https://api.gopluslabs.io/api
 SOSOVALUE_BASE_URL=https://openapi.sosovalue.com/openapi/v1
+SOSOVALUE_NEWS_LANGUAGE=en
+SOSOVALUE_TIMEOUT_MS=12000
+SOSOVALUE_MAX_CALLS_PER_MINUTE=16
+SOSOVALUE_INDEX_TICKERS=
+SOSOVALUE_CAMPAIGN_KEYWORDS=
 SODEX_REST_BASE_URL=https://mainnet-gw.sodex.dev/api/v1
 SODEX_SPOT_ENDPOINT=
 SODEX_PERPS_ENDPOINT=
+
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+KV_REST_API_URL=
+KV_REST_API_TOKEN=
+WALLETSHIELD_REQUIRE_SHARED_RATE_LIMIT=false
 ```
 
-Only `SOSOVALUE_API_KEY` and `OPENAI_API_KEY` are required for the full demo. `OPENAI_MODEL` defaults to `gpt-5-mini` and can be changed from the environment without a code deploy. RPC and endpoint variables are optional because the app includes public fallback RPC and SoDEX endpoints. Vercel Analytics is opt-in through `NEXT_PUBLIC_ENABLE_ANALYTICS=true`. The app never stores private keys or SoDEX signing secrets.
+For a full production deployment, configure `SOSOVALUE_API_KEY`, `OPENAI_API_KEY`, all primary RPC URLs, and provider endpoint URLs in the hosting environment. `OPENAI_MODEL` defaults to `gpt-5-mini` and can be changed without a code deploy. `OPENAI_BASE_URL` is configurable for region-specific OpenAI-compatible gateways. Public RPC fallbacks are now opt-in and environment-owned through `ALLOW_PUBLIC_RPC_FALLBACKS=true` plus the `*_PUBLIC_RPC_FALLBACK_URL` values; keep this disabled for production unless you explicitly accept public RPC reliability and privacy tradeoffs. Vercel Analytics is opt-in through `NEXT_PUBLIC_ENABLE_ANALYTICS=true`. The app never stores private keys or SoDEX signing secrets.
+
+SoSoValue production notes:
+
+- Official base URL: `https://openapi.sosovalue.com/openapi/v1`
+- Authentication header: `x-soso-api-key`
+- Documented quota: 100,000 requests/month and 20 requests/minute per API key
+- WalletShield defaults `SOSOVALUE_MAX_CALLS_PER_MINUTE=16` to stay below the documented minute limit, keeps a cold scan to roughly 10 SoSoValue calls by default, and uses short server-side caches for repeated scans.
+- Serverless production should configure `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` or Vercel KV `KV_REST_API_URL` / `KV_REST_API_TOKEN` for shared quota protection across instances. Set `WALLETSHIELD_REQUIRE_SHARED_RATE_LIMIT=true` if deployment must fail closed when the shared store is unavailable.
+- `SOSOVALUE_NEWS_LANGUAGE` supports the documented SoSoValue news languages. Use `zh` for Simplified Chinese or `tc` for Traditional Chinese.
+- `SOSOVALUE_INDEX_TICKERS` and `SOSOVALUE_CAMPAIGN_KEYWORDS` optionally pin the SSI indexes and scam narrative searches without code changes.
 
 For Vercel, add the same variables in Project Settings -> Environment Variables before production deployment. Keep real values out of Git, README files, screenshots, issue comments, and demo recordings.
 
@@ -142,16 +175,44 @@ corepack pnpm build
 vercel deploy --prod
 ```
 
+`vercel.json` pins the pnpm install/build commands and sets longer API function durations for provider-heavy scan routes:
+
+- `/api/scan`: 30 seconds
+- `/api/token-risk`: 15 seconds
+- `/api/assistant`: 15 seconds
+
 Recommended production variables:
 
 - `SOSOVALUE_API_KEY`
+- `SOSOVALUE_NEWS_LANGUAGE`
+- `SOSOVALUE_MAX_CALLS_PER_MINUTE`
+- `SOSOVALUE_INDEX_TICKERS`
+- `SOSOVALUE_CAMPAIGN_KEYWORDS`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `OPENAI_BASE_URL`
+- `GOPLUS_BASE_URL`
 - `NEXT_PUBLIC_ENABLE_ANALYTICS`
-- optional RPC overrides for higher reliability
-- optional SoDEX endpoint overrides if the public gateway changes
+- `ETHEREUM_RPC_URL`, `BSC_RPC_URL`, `POLYGON_RPC_URL`, `ARBITRUM_RPC_URL`, `BASE_RPC_URL`
+- `SODEX_REST_BASE_URL`, `SODEX_SPOT_ENDPOINT`, `SODEX_PERPS_ENDPOINT`
+- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or Vercel KV REST equivalents
+- `WALLETSHIELD_REQUIRE_SHARED_RATE_LIMIT=true` for fail-closed production quota enforcement
 
 After changing any Vercel environment variable, redeploy production so the serverless routes receive the new values.
+
+## China-Ready Deployment Notes
+
+The app has been adjusted so the frontend does not depend on Google-hosted fonts. It uses the local `geist` package fonts and system monospace fallbacks.
+
+For China-facing deployment:
+
+- Set `SOSOVALUE_NEWS_LANGUAGE=zh` for Simplified Chinese SoSoValue news content.
+- Use region-accessible RPC endpoints for `ETHEREUM_RPC_URL`, `BSC_RPC_URL`, `POLYGON_RPC_URL`, `ARBITRUM_RPC_URL`, and `BASE_RPC_URL`.
+- Set `GOPLUS_BASE_URL`, `SOSOVALUE_BASE_URL`, and SoDEX endpoint overrides if the deployment region needs approved regional gateways or mirrors.
+- Set `OPENAI_BASE_URL` if your production environment reaches OpenAI through an approved regional gateway.
+- Keep `NEXT_PUBLIC_ENABLE_ANALYTICS=false` unless Vercel Analytics is intentionally allowed for the deployment region.
+- Configure shared Redis/KV rate limiting before high-traffic demos; in-memory fallback is local-process only.
+- Verify SoSoValue, OpenAI, RPC, GoPlus, and SoDEX reachability from the hosting region before launch; WalletShield degrades safely when sources fail, but full functionality requires live upstream access.
 
 ## Local Development
 
@@ -169,9 +230,7 @@ http://localhost:3000
 Production check:
 
 ```bash
-corepack pnpm lint
-corepack pnpm audit --audit-level moderate
-corepack pnpm build
+corepack pnpm verify
 corepack pnpm exec next start -p 3100
 ```
 
@@ -183,10 +242,11 @@ corepack pnpm exec next start -p 3100
 4. Show the security score and AI explanation.
 5. Show **Score Formula** so reviewers can see the weighted methodology.
 6. Open **Approval Manager** and show risky/unlimited approvals plus `eth_call` simulation and gas-estimate gating before revoke submission.
-7. Open **Intel** and show SoSoValue campaign watch, SSI/market signals, SoDEX read-only context, and forensics timeline.
-8. Use **Token Probe** with a known token contract or suspicious airdrop token.
-9. Ask the AI assistant: “Why is this approval risky?”
-10. End in **Recovery Center** to show what the user should do next.
+7. Open **Intel** and show SoSoValue campaign watch, SSI/market signals, macro events, SoDEX read-only context, and forensics timeline.
+8. Open **Radar**, add a public wallet address to the local watchlist, and run **Scan All** to show real rescans.
+9. Use **Token Probe** with a known token contract or suspicious airdrop token.
+10. Ask the AI assistant: “Why is this approval risky?”
+11. End in **Recovery Center** to show what the user should do next.
 
 ## WaveHack Roadmap
 
@@ -215,19 +275,31 @@ Implemented for Wave 2:
 - **Safer revoke UX:** revokes run `eth_call` simulation and gas estimation before opening the wallet confirmation.
 - **Production setup:** secrets stay in ignored env files, endpoint URLs are configurable, OpenAI model selection is environment-driven, unsupported chains fail clearly, API routes validate and rate-limit requests, and server errors avoid exposing raw upstream details.
 
-### Wave 3 - Full Wallet Protection Network
+### Wave 3 - Proactive Web Protection
+
+Implemented for Wave 3:
+
+- **Protection Radar:** new dashboard surface that combines source confidence, SoSoValue campaign matches, and SoSoValue macro calendar events.
+- **SoSoValue macro calendar:** `GET /macro/events` is used as real context for volatility-driven phishing, fake liquidation messages, and panic-signing risk.
+- **Macro-aware scoring:** near-window macro events add transparent market-context deductions without pretending they are wallet-specific compromise evidence.
+- **Browser-local multi-wallet watchlist:** users add their own public wallet addresses, then rescan all watched wallets through `POST /api/scan`; no sample wallets or fake alerts are preloaded.
+- **Rate-limit-aware SoSoValue client:** server-side SoSoValue calls normalize response wrappers, cache repeated reads, limit default cold-scan fanout, and use a conservative quota guard under the documented 20 requests/minute limit. Vercel/serverless deployments can use Upstash Redis or Vercel KV for shared quota enforcement across instances.
+- **China-ready frontend runtime:** Google-hosted font dependencies were removed; OpenAI, GoPlus, SoSoValue, SoDEX, SoSoValue language, SoSoValue timeout, SoSoValue campaign/index tuning, and RPC URLs are environment-configurable.
+- **Production hardening pass:** RPC public fallbacks are opt-in via environment, malformed RPC quantities degrade safely, assistant fallback source labels are accurate, browser storage failures do not break successful scans, unsupported wallet chains get clear UI warnings, API responses include request IDs, and focused Vitest coverage protects critical helpers/routes.
+- **Reduced-motion and mobile polish:** root Framer Motion config honors reduced-motion preferences, dashboard inputs have visible focus rings, app colors use OKLCH tokens, broad `transition-all` usage was replaced with explicit transitions, and the global layout clips accidental horizontal overflow.
+
+Remaining future infrastructure:
 
 - Browser extension for pre-signature warnings.
-- Wallet reputation engine.
-- Community threat reports.
-- Telegram/email/push alerts.
-- AI phishing-site detector.
-- Team and family wallet monitoring.
+- Cross-device/team wallet monitoring with authenticated accounts.
+- Community threat reports and moderation workflow.
+- Telegram/email/push notification channels.
+- AI phishing-site detector for URLs before signing.
 - Developer API for wallets and dApps to embed WalletShield checks.
 
 ## SoSoValue, SoSoValue Indexes, And SoDEX Fit
 
-WalletShield uses SoSoValue as the market intelligence layer. Fast market moves often increase phishing, scam-airdrop, and panic-signing attempts. The Wave 2 scanner uses SoSoValue currency snapshots, SSI index snapshots, live news, and keyword campaign search so wallet risk is evaluated against active market and scam narratives.
+WalletShield uses SoSoValue as the market intelligence layer. Fast market moves and macro-event windows often increase phishing, scam-airdrop, fake liquidation, and panic-signing attempts. The scanner uses SoSoValue currency snapshots, SSI index snapshots, macro calendar events, live news, and keyword campaign search so wallet risk is evaluated against active market and scam narratives.
 
 The project aligns with SoDEX and ValueChain by acting as a protective layer before users trade. WalletShield uses read-only SoDEX public market data and account API-key surface checks, while avoiding signed trading writes because those require EIP-712 signatures and private signing-key custody.
 
@@ -237,12 +309,15 @@ The project aligns with SoDEX and ValueChain by acting as a protective layer bef
 - `.env.local` and deployment env files are ignored and excluded from Vercel upload.
 - WalletShield never asks for seed phrases or private keys.
 - Assistant questions are checked locally for seed phrases, private keys, recovery phrases, and API secrets before any OpenAI request is made.
-- API routes validate JSON bodies, cap body size, add no-store response headers, and apply a lightweight per-client rate limit.
-- API routes also include route-level global caps to reduce accidental quota burn during public demos.
+- API routes validate JSON bodies, cap body size, add no-store response headers, include request IDs, and apply per-client plus route-level caps.
+- Rate limiting uses Upstash Redis or Vercel KV when configured, with local in-memory fallback for development/demo.
+- SoSoValue calls use shared quota enforcement when configured and short-lived caches to respect the documented 20 requests/minute API-key limit.
+- Production RPC reads require environment-provided primary RPC URLs unless public fallback mode is explicitly enabled and fallback URLs are provided.
 - Assistant prompts use only a redacted scan digest with shortened addresses before calling OpenAI.
-- OpenAI model selection is environment-driven; the code default is a replaceable low-latency model for demo reliability.
+- OpenAI model and base URL selection are environment-driven; the code default is a replaceable low-latency model for demo reliability.
 - Revoke actions are simulated with `eth_call`, gas-estimated, and then wallet-confirmed.
 - Local scan history is stored in the browser only and expires after seven days.
+- The Wave 3 protection watchlist is stored in the browser only and expires after thirty days.
 - SoDEX is read-only in WalletShield; no order placement, no trading private-key entry, and no signed SoDEX write requests.
 - Scores are security guidance, not financial advice.
 - Scores can produce false positives or false negatives. The UI shows model-limit notes and data-confidence warnings with each scan.
@@ -250,21 +325,30 @@ The project aligns with SoDEX and ValueChain by acting as a protective layer bef
 
 ## Verification Status
 
-Latest local audit completed:
+Latest local audit for this final pass:
 
-- TypeScript check: passing
-- Production build: passing
-- Dependency audit: no known vulnerabilities
-- Homepage HTTP smoke test: passing
-- Wallet scan API: working with score formula, SoSoValue/SSI signals, SoSoValue campaign matches, SoDEX signals, and forensics fields
-- Token risk API: working for valid tokens, invalid-address validation, and unsupported-chain validation
-- Assistant API: working with OpenAI/local fallback behavior
-- User-facing server failures are sanitized so upstream implementation details are not exposed
+- Full verification script: passing with `corepack pnpm verify`
+- TypeScript check: passing with `corepack pnpm lint`
+- Unit/API helper tests: passing with `corepack pnpm test:run` (`6` test files, `16` tests)
+- Dependency audit: no known vulnerabilities with `corepack pnpm audit --audit-level moderate`
+- Production build: passing with `corepack pnpm build`
+- Build warning from Next/Turbopack workspace-root inference: resolved
+- Google-hosted font dependency: removed from production app code
+- Homepage/API HTTP smoke test: passing (`/` returned 200 with WalletShield/Radar content; invalid scan returned 400; assistant safety guard returned 200; valid USDC token-risk probe returned 200)
+- Positive wallet scan smoke test: passing (`/api/scan` returned 200 for a public Ethereum burn address with score, approvals, live GoPlus, partial SoSoValue, live SoDEX, live OpenAI, and safe RPC degradation when primary RPC env/fallback env are not configured)
+- Wallet scan API: typechecked with score formula, SoSoValue/SSI/news/campaign/macro fields, SoDEX signals, and forensics fields
+- Token risk API: typechecked and regression-tested for the UI `contractAddress` request contract plus invalid-payload rejection
+- Assistant API: typechecked with OpenAI/local fallback behavior and configurable `OPENAI_BASE_URL`
+- User-facing server failures remain sanitized so upstream implementation details are not exposed
+- Production config tests verify that public RPC fallback URLs must be environment-provided and opt-in.
 
 ## References
 
 - SoSoValue API docs: https://sosovalue-1.gitbook.io/sosovalue-api-doc
-- SoSoValue Indexes docs: https://sosovalue.gitbook.io/sosovalue-indices
+- SoSoValue rate-limit docs: https://sosovalue-1.gitbook.io/sosovalue-api-doc/rate-limit
+- SoSoValue Index docs: https://sosovalue-1.gitbook.io/sosovalue-api-doc/3.-sosovalue-index/index
+- SoSoValue Macro docs: https://sosovalue-1.gitbook.io/sosovalue-api-doc/8.-macro/macro
+- SoSoValue Macro Events docs: https://sosovalue-1.gitbook.io/sosovalue-api-doc/8.-macro/events
 - SoDEX documentation: https://sodex.com/documentation
 - OpenAI text generation docs: https://developers.openai.com/api/docs/guides/text
 - GoPlus Security docs: https://docs.gopluslabs.io/docs/getting-started
