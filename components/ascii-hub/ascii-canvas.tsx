@@ -8,6 +8,7 @@ interface AsciiCanvasProps {
   label: string
 }
 
+
 export function AsciiCanvas({ art, label }: AsciiCanvasProps) {
   const [isHovered, setIsHovered] = useState(false)
 
