@@ -9,6 +9,8 @@ export interface TechSection {
   commands: string[]
 }
 
+
+
 export const techSections: TechSection[] = [
   {
     id: "dashboard",
