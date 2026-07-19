@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/next"
 import { MotionSafeProvider } from "@/components/motion-safe-provider"
 import "./globals.css"
 
+
 const geistMono = GeistMono
 const geistPixelLine = GeistPixelLine
 
